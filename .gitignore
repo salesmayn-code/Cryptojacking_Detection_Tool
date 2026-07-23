@@ -79,6 +79,15 @@ test_report.html
 *.bak
 *.orig
 
+# published docs / manuscripts
+*.md
+*.markdown
+*.docx
+/Dcox/
+/monitoring_agent/README.txt
+/test/*.md
+/tools/xmrig-safe-lab/README.md
+
 # agent build artifacts
 /monitoring_agent/build/
 /monitoring_agent/dist/
