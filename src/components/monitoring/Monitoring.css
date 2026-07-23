@@ -1,15 +1,10 @@
-/* Monitoring Page Styling */
+/* ===== Monitoring Page ===== */
 
 .monitoring-container {
-    min-height: 100vh;
-    background: var(--bg-primary);
-    padding: var(--space-lg);
+    min-height: 100%;
 }
 
 .monitoring-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     margin-bottom: var(--space-xl);
     padding-bottom: var(--space-lg);
     border-bottom: 1px solid var(--border-color);
@@ -17,24 +12,38 @@
 
 .monitoring-header h1 {
     margin: 0;
-    font-size: 1.75rem;
-    font-weight: 600;
+    font-size: 1.5rem;
+    font-weight: 700;
     color: var(--text-primary);
+    letter-spacing: -0.02em;
+}
+
+.monitoring-header-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
 }
 
 /* Status Cards */
 .status-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: var(--space-lg);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-md);
     margin-bottom: var(--space-xl);
 }
 
 .status-card {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     padding: var(--space-lg);
+    transition: all var(--transition-fast);
+}
+
+.status-card:hover {
+    border-color: rgba(99, 102, 241, 0.2);
+    box-shadow: var(--shadow-md);
 }
 
 .status-card-header {
@@ -45,7 +54,7 @@
 }
 
 .status-card-title {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     color: var(--text-muted);
     text-transform: uppercase;
     font-weight: 600;
@@ -53,18 +62,53 @@
 }
 
 .status-card-icon {
-    font-size: 1.5rem;
+    font-size: 0.625rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.05em;
+}
+
+.status-card-icon-blue {
+    background: rgba(99, 102, 241, 0.1);
+    color: #6366f1;
+}
+
+.status-card-icon-green {
+    background: var(--success-glow);
+    color: var(--success-color);
+}
+
+.status-card-icon-amber {
+    background: var(--warning-glow);
+    color: var(--warning-color);
+}
+
+.status-card-icon-purple {
+    background: rgba(168, 85, 247, 0.12);
+    color: #a855f7;
+}
+
+.status-card-icon-muted {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
 }
 
 .status-card-value {
-    font-size: 2rem;
-    font-weight: 700;
+    font-size: 1.75rem;
+    font-weight: 800;
     color: var(--text-primary);
     margin-bottom: var(--space-md);
+    letter-spacing: -0.02em;
+}
+
+.status-card-value-sm {
+    font-size: 1rem;
 }
 
 .status-card-bar {
-    height: 6px;
+    height: 5px;
     background: var(--bg-tertiary);
     border-radius: 999px;
     overflow: hidden;
@@ -72,30 +116,55 @@
 
 .status-card-bar-fill {
     height: 100%;
-    transition: width 0.3s ease;
+    transition: width 0.5s ease;
     border-radius: 999px;
 }
 
 .status-card-bar-fill.cpu {
-    background: linear-gradient(90deg, #3b82f6, #2563eb);
+    background: linear-gradient(90deg, #6366f1, #818cf8);
 }
 
 .status-card-bar-fill.memory {
-    background: linear-gradient(90deg, #10b981, #059669);
+    background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.status-card-bar-fill.gpu {
+    background: linear-gradient(90deg, #a855f7, #c084fc);
+}
+
+.status-card-bar-fill.gpu-memory {
+    background: linear-gradient(90deg, #22c55e, #86efac);
+}
+
+.status-dot-large {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-top: var(--space-sm);
+}
+
+.status-dot-large.online {
+    background: var(--success-color);
+    box-shadow: 0 0 8px var(--success-glow);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.status-dot-large.offline {
+    background: var(--text-muted);
 }
 
 /* Charts Grid */
 .charts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
-    gap: var(--space-lg);
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: var(--space-md);
     margin-bottom: var(--space-xl);
 }
 
 .chart-card {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     padding: var(--space-lg);
 }
 
@@ -104,21 +173,21 @@
 }
 
 .chart-title {
-    font-size: 1rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: var(--text-primary);
     margin: 0 0 var(--space-lg) 0;
 }
 
-/* Alerts Table */
+/* Monitoring Section */
 .monitoring-section {
     margin-bottom: var(--space-xl);
 }
 
 .alerts-table-container {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     overflow: hidden;
 }
 
@@ -130,10 +199,5 @@
 
     .status-cards {
         grid-template-columns: 1fr;
-    }
-
-    .monitoring-header {
-        flex-direction: column;
-        gap: var(--space-md);
     }
 }

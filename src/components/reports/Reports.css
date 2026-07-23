@@ -1,180 +1,222 @@
-/* Reports Page Styling */
+/* ===== Reports Page ===== */
 
 .reports-page {
-    min-height: 100vh;
-    background: var(--bg-primary);
-    padding-bottom: var(--space-xl);
+    min-height: 100%;
 }
 
 .reports-stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: var(--space-lg);
-    padding: 0 var(--space-lg);
-    margin-bottom: var(--space-xl);
-}
-
-.reports-chart {
-    padding: 0 var(--space-lg);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-md);
     margin-bottom: var(--space-xl);
 }
 
 .reports-actions {
-    padding: 0 var(--space-lg);
+    display: flex;
+    align-items: center;
     margin-bottom: var(--space-xl);
+    justify-content: space-between;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+}
+
+.reports-actions-buttons {
+    display: flex;
+    gap: var(--space-sm);
 }
 
 .reports-section {
-    padding: 0 var(--space-lg);
-}
-
-/* Report Modal */
-.report-modal {
-    max-width: 600px;
-}
-
-.form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
-}
-
-.checkbox-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    max-height: 200px;
-    overflow-y: auto;
-    padding: var(--space-sm);
-    background: var(--bg-tertiary);
-    border-radius: var(--radius-md);
-}
-
-.checkbox-group.horizontal {
-    flex-direction: row;
-    max-height: none;
-    overflow-y: visible;
-}
-
-.checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    cursor: pointer;
-    padding: var(--space-sm);
-    border-radius: var(--radius-sm);
-    transition: background 0.2s;
-}
-
-.checkbox-label:hover {
-    background: var(--bg-primary);
-}
-
-.checkbox-label input[type="checkbox"] {
-    cursor: pointer;
-    width: 18px;
-    height: 18px;
-}
-
-.checkbox-label span {
-    color: var(--text-primary);
-    font-size: 0.875rem;
-}
-
-.capitalize {
-    text-transform: capitalize;
-}
-
-.uppercase {
-    text-transform: uppercase;
+    margin-bottom: var(--space-xl);
 }
 
 /* Reports Grid */
 .reports-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: var(--space-lg);
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: var(--space-md);
 }
 
 /* Report Card */
 .report-card {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     padding: var(--space-lg);
-    transition: all 0.2s;
+    transition: all var(--transition-fast);
+    position: relative;
+    overflow: hidden;
+}
+
+.report-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--primary-gradient);
+    opacity: 0;
+    transition: opacity var(--transition-base);
 }
 
 .report-card:hover {
-    transform: translateY(-4px);
+    transform: translateY(-2px);
     box-shadow: var(--shadow-lg);
-    border-color: var(--primary-color);
+    border-color: rgba(99, 102, 241, 0.3);
+}
+
+.report-card:hover::before {
+    opacity: 1;
 }
 
 .report-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--space-md);
-    margin-bottom: var(--space-lg);
+    margin-bottom: var(--space-md);
 }
 
 .report-icon {
-    font-size: 2rem;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.625rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+}
+
+.report-icon.pdf {
+    background: var(--danger-glow);
+    color: var(--danger-color);
+}
+
+.report-icon.csv {
+    background: var(--success-glow);
+    color: var(--success-color);
 }
 
 .report-title {
-    font-size: 1.125rem;
-    font-weight: 600;
-    margin: 0 0 0.25rem 0;
+    font-size: 0.9375rem;
+    font-weight: 700;
     color: var(--text-primary);
 }
 
 .report-date {
-    font-size: 0.813rem;
+    font-size: 0.75rem;
     color: var(--text-muted);
-    margin: 0;
+    margin-top: 0.15rem;
 }
 
 .report-header .badge {
     margin-left: auto;
 }
 
+/* Report body */
 .report-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    margin-bottom: var(--space-lg);
-    padding: var(--space-lg) 0;
     border-top: 1px solid var(--border-color);
-    border-bottom: 1px solid var(--border-color);
+    padding-top: var(--space-md);
+    margin-bottom: var(--space-md);
 }
 
 .report-detail {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding: 0.35rem 0;
+}
+
+.metric-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-left: 0.35rem;
 }
 
 .detail-label {
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     color: var(--text-muted);
     font-weight: 500;
 }
 
 .detail-value {
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     color: var(--text-primary);
-    text-align: right;
+    font-weight: 600;
 }
 
+/* Report footer */
 .report-footer {
+    border-top: 1px solid var(--border-color);
+    padding-top: var(--space-md);
     display: flex;
     justify-content: flex-end;
 }
 
+/* Report modal specific */
+.report-modal {
+    max-width: 560px;
+}
+
+.system-info-box {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: 0.75rem 1rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+}
+
+.system-info-box strong {
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+/* Checkbox group */
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.checkbox-group.horizontal {
+    flex-direction: row;
+    gap: var(--space-lg);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
-    .form-row {
+    .reports-stats {
         grid-template-columns: 1fr;
     }
 

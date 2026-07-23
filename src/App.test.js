@@ -1,8 +1,14 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders learn react link', () => {
+jest.mock('./services/api', () => ({
+  authAPI: {
+    getProfile: jest.fn().mockRejectedValue(new Error('unauthorized')),
+  },
+}));
+
+test('renders login page', async () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
+  expect(screen.getByText(/CryptoDetect/i)).toBeInTheDocument();
 });

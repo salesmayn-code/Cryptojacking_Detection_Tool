@@ -10,6 +10,9 @@ import UserDashboard from './components/dashboard/UserDashboard';
 import SystemMonitoring from './components/monitoring/SystemMonitoring';
 import AlertsPage from './components/alerts/AlertsPage';
 import ReportsPage from './components/reports/ReportsPage';
+import ProfilePage from './components/profile/ProfilePage';
+import MainLayout from './components/layout/MainLayout';
+import AuditLogsPage from './components/dashboard/AuditLogsPage';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -22,7 +25,7 @@ const ProtectedRoute = ({ children }) => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: '#0f172a'
+        background: 'var(--bg-primary)'
       }}>
         <div className="spinner"></div>
       </div>
@@ -30,6 +33,27 @@ const ProtectedRoute = ({ children }) => {
   }
 
   return isAuthenticated ? children : <Navigate to="/login" replace />;
+};
+
+// Public Route - redirect to dashboard if already logged in
+const PublicRoute = ({ children }) => {
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-primary)'
+      }}>
+        <div className="spinner"></div>
+      </div>
+    );
+  }
+
+  return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
 };
 
 // Dashboard Router - shows admin or user dashboard based on role
@@ -43,16 +67,22 @@ function App() {
     <AuthProvider>
       <Router>
         <Routes>
-          {/* Public Routes */}
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+          {/* Public Routes - redirect to dashboard if logged in */}
+          <Route path="/login" element={
+            <PublicRoute><Login /></PublicRoute>
+          } />
+          <Route path="/register" element={
+            <PublicRoute><Register /></PublicRoute>
+          } />
 
           {/* Protected Routes */}
           <Route
             path="/dashboard"
             element={
               <ProtectedRoute>
-                <DashboardRouter />
+                <MainLayout title="Dashboard">
+                  <DashboardRouter />
+                </MainLayout>
               </ProtectedRoute>
             }
           />
@@ -60,7 +90,19 @@ function App() {
             path="/system/:systemId"
             element={
               <ProtectedRoute>
-                <SystemMonitoring />
+                <MainLayout title="Live Metrics">
+                  <SystemMonitoring />
+                </MainLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <MainLayout title="Profile">
+                  <ProfilePage />
+                </MainLayout>
               </ProtectedRoute>
             }
           />
@@ -68,7 +110,9 @@ function App() {
             path="/alerts"
             element={
               <ProtectedRoute>
-                <AlertsPage />
+                <MainLayout title="Alerts">
+                  <AlertsPage />
+                </MainLayout>
               </ProtectedRoute>
             }
           />
@@ -76,14 +120,27 @@ function App() {
             path="/reports"
             element={
               <ProtectedRoute>
-                <ReportsPage />
+                <MainLayout title="Reports">
+                  <ReportsPage />
+                </MainLayout>
               </ProtectedRoute>
             }
           />
 
-          {/* Default redirect */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route
+            path="/admin/audit-logs"
+            element={
+              <ProtectedRoute>
+                <MainLayout title="Audit Logs">
+                  <AuditLogsPage />
+                </MainLayout>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Default redirect -> login */}
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </Router>
     </AuthProvider>

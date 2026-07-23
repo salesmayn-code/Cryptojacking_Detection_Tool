@@ -2,34 +2,20 @@ import React from 'react';
 import './Dashboard.css';
 
 const SystemCard = ({ system, onClick }) => {
-    const getStatusColor = (status) => {
-        switch (status?.toLowerCase()) {
-            case 'online':
-            case 'normal':
-                return 'status-normal';
-            case 'suspicious':
-                return 'status-suspicious';
-            case 'alert':
-            case 'offline':
-                return 'status-alert';
-            default:
-                return 'status-muted';
-        }
-    };
+    const status = system.status?.toLowerCase() || 'unknown';
 
-    const getStatusIcon = (status) => {
-        switch (status?.toLowerCase()) {
+    const getStatusBadge = (s) => {
+        switch (s) {
             case 'online':
             case 'normal':
-                return '🟢';
+                return 'success';
             case 'suspicious':
-                return '🟡';
+                return 'warning';
             case 'alert':
-                return '🔴';
             case 'offline':
-                return '⚫';
+                return 'danger';
             default:
-                return '⚪';
+                return 'warning';
         }
     };
 
@@ -38,12 +24,11 @@ const SystemCard = ({ system, onClick }) => {
             <div className="system-card-header">
                 <div>
                     <h3 className="system-name">{system.system_name}</h3>
-                    <p className="system-id">{system.system_id}</p>
+                    <code className="system-id">{system.system_id}</code>
                 </div>
-                <div className={`system-status ${getStatusColor(system.status)}`}>
-                    <span className="status-icon">{getStatusIcon(system.status)}</span>
-                    <span className="status-text">{system.status || 'Unknown'}</span>
-                </div>
+                <span className={`badge badge-${getStatusBadge(status)}`}>
+                    {status}
+                </span>
             </div>
 
             {system.system_description && (

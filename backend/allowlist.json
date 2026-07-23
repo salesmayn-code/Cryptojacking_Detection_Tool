@@ -1,0 +1,15 @@
+{
+  "name_exact": [
+    "vmware.exe",
+    "virtualboxvm.exe"
+  ],
+  "name_contains": [
+    "vmware",
+    "virtualbox"
+  ],
+  "path_contains": [
+    "\\program files\\vmware\\",
+    "\\oracle\\virtualbox\\"
+  ],
+  "hash_exact": []
+}

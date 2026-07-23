@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "allow_rules": [
+    {
+      "id": "generic-signed-program-files",
+      "path_contains": ["\\program files\\", "\\program files (x86)\\"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "vmware-legit",
+      "name_contains": ["vmware"],
+      "path_contains": ["\\vmware\\"],
+      "publisher_contains": ["vmware"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "virtualbox-legit",
+      "name_contains": ["virtualbox", "virtualboxvm"],
+      "path_contains": ["\\oracle\\virtualbox\\"],
+      "publisher_contains": ["oracle"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "vscode-legit",
+      "name_exact": ["code.exe"],
+      "path_contains": ["\\microsoft vs code\\", "\\appdata\\local\\programs\\microsoft vs code\\"],
+      "publisher_contains": ["microsoft"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "chrome-legit",
+      "name_exact": ["chrome.exe"],
+      "path_contains": ["\\google\\chrome\\", "\\chrome\\application\\"],
+      "publisher_contains": ["google"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "steam-legit",
+      "name_contains": ["steam"],
+      "path_contains": ["\\steam\\"],
+      "publisher_contains": ["valve"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "blender-legit",
+      "name_contains": ["blender"],
+      "path_contains": ["\\blender"],
+      "publisher_contains": ["blender"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    },
+    {
+      "id": "adobe-legit",
+      "name_contains": ["adobe", "creative cloud"],
+      "path_contains": ["\\adobe\\"],
+      "publisher_contains": ["adobe"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
+    }
+  ],
+  "deny_rules": [
+    {
+      "id": "known-miner-process-names",
+      "name_contains": ["xmrig", "xmrig-notls", "xmr-stak", "cpuminer", "minerd", "ethminer", "nbminer", "lolminer", "trex", "t-rex"],
+      "min_match_count": 1
+    },
+    {
+      "id": "known-miner-paths",
+      "path_contains": ["\\xmrig\\", "\\miners\\", "\\cryptonight\\", "\\randomx\\"],
+      "min_match_count": 1
+    }
+  ],
+  "svchost_policy": {
+    "expected_path_contains": ["\\windows\\system32\\svchost.exe", "\\windows\\syswow64\\svchost.exe"],
+    "expected_parent_names": ["services.exe", "wininit.exe"],
+    "trusted_publishers_contains": ["microsoft"]
+  }
+}

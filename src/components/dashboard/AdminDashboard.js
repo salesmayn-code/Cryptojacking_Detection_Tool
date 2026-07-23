@@ -6,12 +6,14 @@ import SystemCard from './SystemCard';
 import './Dashboard.css';
 
 const AdminDashboard = () => {
-    const { user, logout } = useAuth();
+    const { user } = useAuth();
     const navigate = useNavigate();
     const [systems, setSystems] = useState([]);
     const [alerts, setAlerts] = useState([]);
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [lastUpdated, setLastUpdated] = useState(null);
     const [showAddSystem, setShowAddSystem] = useState(false);
     const [newSystem, setNewSystem] = useState({
         system_name: '',
@@ -26,20 +28,19 @@ const AdminDashboard = () => {
     const fetchData = async () => {
         try {
             setLoading(true);
-
-            // Fetch all systems (admin can see all)
+            setError('');
             const systemsRes = await systemsAPI.getAll();
             setSystems(systemsRes.data.systems || []);
 
-            // Fetch alert statistics
             const statsRes = await alertsAPI.getStats();
             setStats(statsRes.data);
 
-            // Fetch recent alerts
             const alertsRes = await alertsAPI.getAll({ limit: 10 });
             setAlerts(alertsRes.data.alerts || []);
+            setLastUpdated(new Date());
         } catch (error) {
             console.error('Error fetching data:', error);
+            setError('Could not refresh admin dashboard data.');
         } finally {
             setLoading(false);
         }
@@ -58,7 +59,6 @@ const AdminDashboard = () => {
             fetchData();
         } catch (error) {
             console.error('Error adding system:', error);
-            alert('Failed to add system');
         }
     };
 
@@ -77,25 +77,15 @@ const AdminDashboard = () => {
     }
 
     return (
-        <div className="dashboard-container">
-            {/* Navigation */}
-            <nav className="dashboard-nav">
-                <div className="nav-brand">
-                    <h2>🔒 Cryptojacking Detector</h2>
-                </div>
-                <div className="nav-user">
-                    <span className="user-name">{user?.full_name}</span>
-                    <span className="badge badge-success">Admin</span>
-                    <button onClick={logout} className="btn btn-secondary btn-sm">
-                        Logout
-                    </button>
-                </div>
-            </nav>
-
+        <div className="dashboard-container fade-in">
             {/* Stats Overview */}
             <div className="dashboard-stats">
                 <div className="stat-card">
-                    <div className="stat-icon">🖥️</div>
+                    <div className="stat-icon stat-icon-blue">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
+                        </svg>
+                    </div>
                     <div className="stat-content">
                         <div className="stat-value">{systems.length}</div>
                         <div className="stat-label">Total Systems</div>
@@ -103,7 +93,11 @@ const AdminDashboard = () => {
                 </div>
 
                 <div className="stat-card">
-                    <div className="stat-icon">⚠️</div>
+                    <div className="stat-icon stat-icon-purple">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                        </svg>
+                    </div>
                     <div className="stat-content">
                         <div className="stat-value">{stats?.total_alerts || 0}</div>
                         <div className="stat-label">Total Alerts</div>
@@ -111,7 +105,11 @@ const AdminDashboard = () => {
                 </div>
 
                 <div className="stat-card">
-                    <div className="stat-icon">🔔</div>
+                    <div className="stat-icon stat-icon-danger">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>
+                    </div>
                     <div className="stat-content">
                         <div className="stat-value">{stats?.unread_alerts || 0}</div>
                         <div className="stat-label">Unread Alerts</div>
@@ -119,7 +117,11 @@ const AdminDashboard = () => {
                 </div>
 
                 <div className="stat-card">
-                    <div className="stat-icon">✅</div>
+                    <div className="stat-icon stat-icon-green">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+                        </svg>
+                    </div>
                     <div className="stat-content">
                         <div className="stat-value">{stats?.acknowledged_alerts || 0}</div>
                         <div className="stat-label">Acknowledged</div>
@@ -129,25 +131,25 @@ const AdminDashboard = () => {
 
             {/* Action Buttons */}
             <div className="dashboard-actions">
-                <button
-                    onClick={() => setShowAddSystem(true)}
-                    className="btn btn-primary"
-                >
-                    ➕ Add New System
+                <button onClick={() => setShowAddSystem(true)} className="btn btn-primary">
+                    Add New System
                 </button>
-                <button
-                    onClick={() => navigate('/alerts')}
-                    className="btn btn-secondary"
-                >
-                    📋 View All Alerts
+                <button onClick={() => navigate('/alerts')} className="btn btn-secondary">
+                    View Alerts
                 </button>
-                <button
-                    onClick={() => navigate('/reports')}
-                    className="btn btn-secondary"
-                >
-                    📊 Generate Report
+                <button onClick={() => navigate('/reports')} className="btn btn-secondary">
+                    Reports
+                </button>
+                <button onClick={() => navigate('/admin/audit-logs')} className="btn btn-secondary">
+                    Audit Logs
+                </button>
+                <button onClick={fetchData} className="btn btn-secondary">
+                    Refresh
                 </button>
             </div>
+
+            {error && <div className="alert alert-danger">{error}</div>}
+            {lastUpdated && <p className="text-muted">Last updated: {lastUpdated.toLocaleTimeString()}</p>}
 
             {/* Add System Modal */}
             {showAddSystem && (
@@ -155,11 +157,8 @@ const AdminDashboard = () => {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()}>
                         <div className="modal-header">
                             <h2>Add New System</h2>
-                            <button
-                                onClick={() => setShowAddSystem(false)}
-                                className="modal-close"
-                            >
-                                ✕
+                            <button onClick={() => setShowAddSystem(false)} className="modal-close">
+                                X
                             </button>
                         </div>
                         <form onSubmit={handleAddSystem}>
@@ -244,14 +243,14 @@ const AdminDashboard = () => {
                         {alerts.slice(0, 5).map((alert) => (
                             <div key={alert.alert_id} className="alert-item">
                                 <div className="alert-icon">
-                                    {alert.alert_type === 'cryptojacking_detected' ? '🚨' : 'ℹ️'}
+                                    {alert.alert_type === 'cryptojacking_detected' ? 'CRIT' : 'INFO'}
                                 </div>
                                 <div className="alert-content">
                                     <div className="alert-title">
                                         Cryptojacking Detected - {alert.system_id}
                                     </div>
                                     <div className="alert-meta">
-                                        {new Date(alert.timestamp).toLocaleString()} •
+                                        {new Date(alert.timestamp).toLocaleString()} |
                                         Confidence: {(alert.confidence * 100).toFixed(1)}%
                                     </div>
                                 </div>

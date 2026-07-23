@@ -1,0 +1,39 @@
+{
+  "name_exact": [
+    "xmrig.exe",
+    "xmrig-notls.exe",
+    "xmr-stak.exe",
+    "cpuminer.exe",
+    "minerd.exe",
+    "ethminer.exe",
+    "phoenixminer.exe",
+    "nbminer.exe",
+    "lolminer.exe",
+    "trex.exe",
+    "t-rex.exe"
+  ],
+  "name_contains": [
+    "xmrig",
+    "xmr-stak",
+    "cpuminer",
+    "minerd",
+    "ethminer",
+    "phoenixminer",
+    "nbminer",
+    "lolminer",
+    "trex",
+    "t-rex",
+    "cryptonight",
+    "randomx",
+    "stratum"
+  ],
+  "path_contains": [
+    "\\xmrig\\",
+    "\\miners\\",
+    "\\cryptonight\\",
+    "\\randomx\\",
+    "\\stratum\\"
+  ],
+  "hash_exact": [],
+  "publisher_contains": []
+}

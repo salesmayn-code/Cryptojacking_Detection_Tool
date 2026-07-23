@@ -1,5 +1,5 @@
 // API Configuration and Service Layer
-import axios from 'axios';
+import axios from 'axios/dist/browser/axios.cjs';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -14,7 +14,7 @@ const api = axios.create({
 // Request interceptor to add JWT token
 api.interceptors.request.use(
     (config) => {
-        const token = localStorage.getItem('token');
+        const token = sessionStorage.getItem('token');
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         }
@@ -31,6 +31,8 @@ api.interceptors.response.use(
     (error) => {
         if (error.response?.status === 401) {
             // Unauthorized - clear token and redirect to login
+            sessionStorage.removeItem('token');
+            sessionStorage.removeItem('user');
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             window.location.href = '/login';
@@ -44,6 +46,16 @@ export const authAPI = {
     register: (data) => api.post('/api/auth/register', data),
     login: (data) => api.post('/api/auth/login', data),
     getProfile: () => api.get('/api/auth/profile'),
+    updateProfile: (data) => api.put('/api/auth/profile', data),
+    changePassword: (data) => api.put('/api/auth/profile/password', data),
+    uploadProfilePicture: (file) => {
+        const formData = new FormData();
+        formData.append('picture', file);
+        return api.post('/api/auth/profile/picture', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+    },
+    validateAgent: (data) => api.post('/api/auth/agent/validate', data),
 };
 
 // Systems API
@@ -68,6 +80,8 @@ export const alertsAPI = {
     getAll: (params) => api.get('/api/alerts', { params }),
     getById: (id) => api.get(`/api/alerts/${id}`),
     update: (id, data) => api.put(`/api/alerts/${id}`, data),
+    remove: (id) => api.delete(`/api/alerts/${id}`),
+    whitelist: (id, data) => api.post(`/api/alerts/${id}/whitelist`, data),
     getBySystem: (systemId, limit = 50) =>
         api.get(`/api/alerts/system/${systemId}`, { params: { limit } }),
     getStats: () => api.get('/api/alerts/stats/summary'),
@@ -81,6 +95,23 @@ export const reportsAPI = {
     getById: (id) => api.get(`/api/reports/${id}`),
     download: (id) => api.get(`/api/reports/${id}/download`, { responseType: 'blob' }),
     schedule: (data) => api.post('/api/reports/schedule', data),
+};
+
+// Admin API
+export const adminAPI = {
+    getAuditLogs: (params) => api.get('/api/admin/audit-logs', { params }),
+    exportAuditLogs: (params) =>
+        api.get('/api/admin/audit-logs/export', { params, responseType: 'blob' }),
+};
+
+// Notifications API
+export const notificationsAPI = {
+    getChannels: () => api.get('/api/notifications/channels'),
+    addChannel: (data) => api.post('/api/notifications/channels', data),
+    verifyChannel: (id, data) => api.post(`/api/notifications/channels/${id}/verify`, data),
+    resendCode: (id) => api.post(`/api/notifications/channels/${id}/resend`),
+    toggleChannel: (id, data) => api.put(`/api/notifications/channels/${id}`, data),
+    deleteChannel: (id) => api.delete(`/api/notifications/channels/${id}`),
 };
 
 export default api;
