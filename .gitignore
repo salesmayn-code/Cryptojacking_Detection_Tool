@@ -81,6 +81,7 @@ test_report.html
 
 # published docs / manuscripts
 *.md
+!README.md
 *.markdown
 *.docx
 /Dcox/
