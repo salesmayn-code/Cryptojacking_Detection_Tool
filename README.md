@@ -10,6 +10,18 @@ The project combines a final-year capstone implementation with a documented
 machine-learning pipeline: shared feature engineering, separate Random Forest
 and XGBoost training scripts, evaluation reports, and saved model artifacts.
 
+## Screenshots
+
+| Dashboard | Monitoring |
+| --- | --- |
+| ![CryptoDetect dashboard](docs/screenshots/dashboard.png) | ![System monitoring](docs/screenshots/monitoring.png) |
+
+| Alerts | Reports |
+| --- | --- |
+| ![Alerts](docs/screenshots/alerts.png) | ![Reports](docs/screenshots/reports.png) |
+
+Screenshots use the local demo dataset and seeded data.
+
 ## Architecture
 
 ```text
