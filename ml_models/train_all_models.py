@@ -1,12 +1,14 @@
-"""Run PH4 training pipeline: preprocess Kaggle data, train both models, and write summary."""
+"""Run model training pipeline: preprocess dataset, train models, and write summary."""
 
 from datetime import datetime
 import json
 from pathlib import Path
 
+from ml_models.evaluate_models import evaluate_models
 from ml_models.feature_engineering import SELECTED_FEATURES
 from ml_models.preprocess_kaggle_data import preprocess_data
 from ml_models.random_forest_model import train_random_forest
+from ml_models.splits import RANDOM
 from ml_models.xgboost_model import train_xgboost
 
 
@@ -61,7 +63,7 @@ def train_all_models() -> dict:
     SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
     metadata = {
         "trained_at": datetime.utcnow().isoformat() + "Z",
-        "dataset": str(PROCESSED_CSV),
+        "dataset": "ml_models/datasets/kaggle_processed.csv",
         "n_samples": int(len(processed_df)),
         "n_features": len(SELECTED_FEATURES),
         "features": SELECTED_FEATURES,
@@ -70,6 +72,14 @@ def train_all_models() -> dict:
         "random_forest": {"test_metrics": rf_metrics},
     }
     METADATA_JSON.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    evaluate_models(
+        {
+            "XGBoost": lambda path: train_xgboost(path, RANDOM, save=False),
+            "Random Forest": lambda path: train_random_forest(path, RANDOM, save=False),
+        },
+        dataset_path=PROCESSED_CSV,
+    )
 
     print(f"Comparison report: {COMPARISON_REPORT}")
     print(f"Model metadata: {METADATA_JSON}")

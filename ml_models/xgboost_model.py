@@ -7,17 +7,18 @@ import joblib
 import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     classification_report,
     f1_score,
     precision_score,
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from ml_models.feature_engineering import SELECTED_FEATURES
+from ml_models.splits import CHRONOLOGICAL, split_dataset
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,7 +27,7 @@ SAVED_MODEL_PATH = BASE_DIR / "saved_models" / "xgboost.pkl"
 REPORT_PATH = BASE_DIR / "evaluation" / "classification_report_xgboost.txt"
 
 
-def prepare_data(dataset_path: Path = DATASET_PATH) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.DataFrame, pd.Series, StandardScaler]:
+def prepare_data(dataset_path: Path = DATASET_PATH, strategy: str = CHRONOLOGICAL) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.DataFrame, pd.Series, StandardScaler]:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Processed dataset not found: {dataset_path}")
 
@@ -34,23 +35,10 @@ def prepare_data(dataset_path: Path = DATASET_PATH) -> Tuple[pd.DataFrame, pd.Da
     if "label" not in df.columns:
         raise ValueError("Dataset is missing 'label' column")
 
-    X = df[SELECTED_FEATURES]
-    y = df["label"].astype(int)
-
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X,
-        y,
-        test_size=0.30,
-        random_state=42,
-        stratify=y,
-    )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp,
-        y_temp,
-        test_size=0.50,
-        random_state=42,
-        stratify=y_temp,
-    )
+    train, val, test = split_dataset(df, strategy)
+    X_train, y_train = train[SELECTED_FEATURES], train["label"].astype(int)
+    X_val, y_val = val[SELECTED_FEATURES], val["label"].astype(int)
+    X_test, y_test = test[SELECTED_FEATURES], test["label"].astype(int)
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
@@ -60,8 +48,8 @@ def prepare_data(dataset_path: Path = DATASET_PATH) -> Tuple[pd.DataFrame, pd.Da
     return X_train_scaled, X_val_scaled, y_train, y_val, X_test_scaled, y_test, scaler
 
 
-def train_xgboost(dataset_path: Path = DATASET_PATH) -> Dict[str, float]:
-    X_train, X_val, y_train, y_val, X_test, y_test, scaler = prepare_data(dataset_path)
+def train_xgboost(dataset_path: Path = DATASET_PATH, strategy: str = CHRONOLOGICAL, save: bool = True) -> Dict[str, float]:
+    X_train, X_val, y_train, y_val, X_test, y_test, scaler = prepare_data(dataset_path, strategy)
 
     pos_count = max(1, int((y_train == 1).sum()))
     neg_count = max(1, int((y_train == 0).sum()))
@@ -101,7 +89,11 @@ def train_xgboost(dataset_path: Path = DATASET_PATH) -> Dict[str, float]:
         "recall": float(recall_score(y_test, y_pred, zero_division=0)),
         "f1": float(f1_score(y_test, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_test, y_prob)),
+        "pr_auc": float(average_precision_score(y_test, y_prob)),
     }
+
+    if not save:
+        return metrics
 
     SAVED_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(

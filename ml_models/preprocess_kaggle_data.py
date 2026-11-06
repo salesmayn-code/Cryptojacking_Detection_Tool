@@ -18,16 +18,19 @@ def _load_labeled_dataset(csv_path: Path, label: int) -> pd.DataFrame:
         raise FileNotFoundError(f"Missing dataset file: {csv_path}")
 
     df = pd.read_csv(csv_path, low_memory=False)
-    missing = [col for col in SELECTED_FEATURES if col not in df.columns]
+    required = ["timestamp"] + list(SELECTED_FEATURES)
+    missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"Dataset {csv_path.name} is missing required columns: {missing}")
 
-    selected = df[SELECTED_FEATURES].copy()
+    # The timestamp only orders the train/test split; it is never a model feature.
+    selected = df[required].copy()
+    selected["timestamp"] = pd.to_datetime(selected["timestamp"], errors="coerce")
     for col in SELECTED_FEATURES:
         selected[col] = pd.to_numeric(selected[col], errors="coerce")
 
     selected["label"] = int(label)
-    selected = selected.dropna(subset=SELECTED_FEATURES)
+    selected = selected.dropna(subset=required)
     selected = selected[(selected["mem_percent"] >= 0) & (selected["mem_percent"] <= 100)]
 
     return selected

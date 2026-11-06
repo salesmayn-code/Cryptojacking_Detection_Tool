@@ -1,0 +1,206 @@
+"""Publish test results for the saved models: metrics, confusion matrices, and SHAP."""
+
+import json
+from pathlib import Path
+from typing import Callable, Dict, Optional
+
+import joblib
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import shap
+from matplotlib.colors import LinearSegmentedColormap
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+
+from ml_models.feature_engineering import SELECTED_FEATURES
+from ml_models.splits import CHRONOLOGICAL, split_dataset
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DATASET_PATH = BASE_DIR / "datasets" / "kaggle_processed.csv"
+SAVED_MODELS_DIR = BASE_DIR / "saved_models"
+RESULTS_DIR = BASE_DIR.parent / "docs" / "results"
+MODEL_FILES = {"XGBoost": "xgboost.pkl", "Random Forest": "random_forest.pkl"}
+CPU_RULE_THRESHOLD = 90.0
+SHAP_SAMPLE_ROWS = 500
+
+TEXT_PRIMARY = "#0b0b0b"
+TEXT_SECONDARY = "#52514e"
+SERIES_BLUE = "#2a78d6"
+MAGNITUDE_MAP = LinearSegmentedColormap.from_list("magnitude", ["#eef4fc", "#2a78d6", "#123a6e"])
+
+
+def _score(y_true, y_pred, y_prob) -> Dict[str, float]:
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": float(roc_auc_score(y_true, y_prob)),
+        "pr_auc": float(average_precision_score(y_true, y_prob)),
+    }
+
+
+def _model_input(artifact: dict, features: pd.DataFrame):
+    scaler = artifact.get("scaler")
+    return scaler.transform(features) if scaler is not None else features
+
+
+def _plot_confusion_matrices(matrices: Dict[str, np.ndarray], path: Path) -> None:
+    fig, axes = plt.subplots(1, len(matrices), figsize=(4.2 * len(matrices), 3.8), squeeze=False)
+    for ax, (name, matrix) in zip(axes[0], matrices.items()):
+        ax.imshow(np.log10(matrix + 1), cmap=MAGNITUDE_MAP)
+        threshold = np.log10(matrix.max() + 1) * 0.55
+        for (row, col), value in np.ndenumerate(matrix):
+            color = "white" if np.log10(value + 1) > threshold else TEXT_PRIMARY
+            ax.text(col, row, f"{value:,}", ha="center", va="center", fontsize=13, color=color)
+        ax.set_title(name, color=TEXT_PRIMARY, fontsize=12)
+        ax.set_xticks([0, 1], ["Normal", "Cryptojacking"], color=TEXT_SECONDARY)
+        ax.set_yticks([0, 1], ["Normal", "Cryptojacking"], color=TEXT_SECONDARY, rotation=90, va="center")
+        ax.set_xlabel("Predicted", color=TEXT_SECONDARY)
+        ax.set_ylabel("Actual", color=TEXT_SECONDARY)
+        ax.tick_params(length=0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160, facecolor="white")
+    plt.close(fig)
+
+
+def _shap_importance(artifact: dict, features: pd.DataFrame) -> pd.Series:
+    sample = features.sample(min(SHAP_SAMPLE_ROWS, len(features)), random_state=42)
+    values = shap.TreeExplainer(artifact["model"]).shap_values(_model_input(artifact, sample))
+    values = np.asarray(values[-1] if isinstance(values, list) else values)
+    if values.ndim == 3:
+        values = values[:, :, -1]
+    return pd.Series(np.abs(values).mean(axis=0), index=SELECTED_FEATURES).sort_values(ascending=False)
+
+
+def _plot_shap(importance: pd.Series, model_name: str, path: Path) -> None:
+    top = importance.head(10).iloc[::-1]
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    ax.barh(top.index, top.values, color=SERIES_BLUE, height=0.55)
+    ax.set_title(f"{model_name}: top features by mean |SHAP| value", color=TEXT_PRIMARY, fontsize=12, loc="left")
+    ax.set_xlabel("Mean |SHAP| value (log-odds)", color=TEXT_SECONDARY)
+    ax.tick_params(length=0, colors=TEXT_SECONDARY)
+    ax.grid(axis="x", color="#e7e6e2", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160, facecolor="white")
+    plt.close(fig)
+
+
+def _metrics_table(rows: Dict[str, Dict[str, float]]) -> str:
+    lines = [
+        "| Model | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, m in rows.items():
+        lines.append(
+            f"| {name} | {m['accuracy']:.4f} | {m['precision']:.4f} | {m['recall']:.4f} "
+            f"| {m['f1']:.4f} | {m['roc_auc']:.4f} | {m['pr_auc']:.4f} |"
+        )
+    return "\n".join(lines)
+
+
+def _write_results_markdown(results: dict, path: Path) -> None:
+    data = results["dataset"]
+    path.write_text(
+        "\n".join(
+            [
+                "# Model results",
+                "",
+                "Generated by `python -m ml_models.train_all_models`.",
+                "",
+                f"Dataset: {data['rows']:,} rows ({data['normal_rows']:,} normal, "
+                f"{data['attack_rows']:,} cryptojacking). Test set: {data['test_rows']:,} rows.",
+                "",
+                "## Chronological test split",
+                "",
+                "Each class is split by time into 70% train, 15% validation, and 15% test.",
+                "",
+                _metrics_table(results["chronological"]),
+                "",
+                "![Confusion matrices](confusion_matrix.png)",
+                "",
+                "![SHAP feature importance](shap_importance.png)",
+                "",
+                "## Random split, for comparison",
+                "",
+                "Neighbouring samples can land in both train and test here, so these scores may be inflated.",
+                "",
+                _metrics_table(results["random"]),
+                "",
+                f"The CPU rule flags a sample when `cpu_total` is at least {CPU_RULE_THRESHOLD:.0f}%. "
+                "It shows how much of the task a single threshold can solve.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def evaluate_models(
+    train_random_split: Dict[str, Callable[[Path], Dict[str, float]]],
+    dataset_path: Path = DATASET_PATH,
+    models_dir: Path = SAVED_MODELS_DIR,
+    results_dir: Path = RESULTS_DIR,
+) -> dict:
+    """Score saved models on the chronological test set and write results to results_dir.
+
+    train_random_split maps a model name to a function that trains it on the random
+    split, without saving it, and returns its test metrics.
+    """
+    df = pd.read_csv(dataset_path)
+    _, _, test = split_dataset(df, CHRONOLOGICAL)
+    features, labels = test[SELECTED_FEATURES], test["label"].astype(int)
+
+    chronological: Dict[str, Dict[str, float]] = {}
+    matrices: Dict[str, np.ndarray] = {}
+    primary: Optional[dict] = None
+    for name, filename in MODEL_FILES.items():
+        artifact = joblib.load(models_dir / filename)
+        model_input = _model_input(artifact, features)
+        y_pred = artifact["model"].predict(model_input)
+        chronological[name] = _score(labels, y_pred, artifact["model"].predict_proba(model_input)[:, 1])
+        matrices[name] = confusion_matrix(labels, y_pred, labels=[0, 1])
+        primary = primary or artifact
+
+    rule_pred = (features["cpu_total"] >= CPU_RULE_THRESHOLD).astype(int)
+    chronological["CPU rule (baseline)"] = _score(labels, rule_pred, features["cpu_total"])
+
+    results = {
+        "dataset": {
+            "rows": int(len(df)),
+            "normal_rows": int((df["label"] == 0).sum()),
+            "attack_rows": int((df["label"] == 1).sum()),
+            "test_rows": int(len(test)),
+        },
+        "chronological": chronological,
+        "random": {name: train(dataset_path) for name, train in train_random_split.items()},
+        "confusion_matrices": {name: matrix.tolist() for name, matrix in matrices.items()},
+    }
+
+    importance = _shap_importance(primary, features)
+    results["shap_importance"] = {name: float(value) for name, value in importance.items()}
+
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "metrics.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    _plot_confusion_matrices(matrices, results_dir / "confusion_matrix.png")
+    _plot_shap(importance, next(iter(MODEL_FILES)), results_dir / "shap_importance.png")
+    _write_results_markdown(results, results_dir / "results.md")
+    print(f"Results written to: {results_dir}")
+    return results

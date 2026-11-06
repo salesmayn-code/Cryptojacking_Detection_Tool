@@ -1,0 +1,49 @@
+{
+  "trained_at": "2026-11-06T19:26:14.568061Z",
+  "dataset": "ml_models/datasets/kaggle_processed.csv",
+  "n_samples": 95310,
+  "n_features": 20,
+  "features": [
+    "cpu_total",
+    "cpu_user",
+    "cpu_system",
+    "cpu_idle",
+    "cpu_iowait",
+    "cpu_irq",
+    "mem_percent",
+    "mem_used",
+    "mem_available",
+    "mem_active",
+    "load_min1",
+    "load_min5",
+    "load_min15",
+    "network_lo_rx",
+    "network_lo_tx",
+    "processcount_running",
+    "processcount_total",
+    "processcount_thread",
+    "cpu_softirq",
+    "mem_cached"
+  ],
+  "target": "label",
+  "xgboost": {
+    "test_metrics": {
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "roc_auc": 1.0,
+      "pr_auc": 1.0
+    }
+  },
+  "random_forest": {
+    "test_metrics": {
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "roc_auc": 1.0,
+      "pr_auc": 1.0
+    }
+  }
+}
