@@ -117,7 +117,7 @@ async def create_system(
     db.commit()
     db.refresh(system)
 
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=email, action="system.create", target_type="system",
                target_id=system_id, details={"system_name": payload.system_name})
     db.commit()
@@ -196,7 +196,7 @@ async def update_system(
     if update.status is not None:
         system.status = update.status
 
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=email, action="system.update", target_type="system",
                target_id=system_id, details={"fields": update.dict(exclude_unset=True)})
     db.commit()
@@ -222,7 +222,7 @@ async def delete_system(
     if not _has_system_access(current_user, system):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=email, action="system.delete", target_type="system",
                target_id=system_id, details={"system_name": system.system_name})
     db.delete(system)

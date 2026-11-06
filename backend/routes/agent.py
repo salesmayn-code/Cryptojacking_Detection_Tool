@@ -108,7 +108,7 @@ async def setup_instructions():
         "notes": [
             "The agent runs as a tray application in the background",
             "Metrics are collected every 5 seconds",
-            "Data is sent to the backend every 5 seconds by default",
+            "Data is sent to the backend every 30 seconds by default (with 10-second heartbeats)",
             "Send interval can be tuned with AGENT_BATCH_SIZE",
             "System ID and API Key are validated before monitoring starts",
             "Stop monitoring from tray menu Stop Monitoring"

@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, DateTime, Integer
 from sqlalchemy.orm import relationship
 from backend.database import Base
 from datetime import datetime
+import hashlib
 import secrets
 import random
 import string
@@ -9,6 +10,7 @@ import string
 
 class User(Base):
     __tablename__ = "users"
+    API_KEY_HASH_PREFIX = "sha256$"
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
@@ -32,3 +34,17 @@ class User(Base):
     @staticmethod
     def generate_api_key():
         return secrets.token_urlsafe(32)
+
+    @classmethod
+    def hash_api_key(cls, api_key: str) -> str:
+        if api_key.startswith(cls.API_KEY_HASH_PREFIX):
+            return api_key
+        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        return f"{cls.API_KEY_HASH_PREFIX}{digest}"
+
+    @staticmethod
+    def mask_api_key(api_key: str | None) -> str:
+        if not api_key:
+            return "••••••••••••"
+        tail = api_key[-4:] if len(api_key) >= 4 else ""
+        return f"••••••••••••{tail}"

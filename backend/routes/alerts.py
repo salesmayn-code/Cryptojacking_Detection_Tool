@@ -319,7 +319,7 @@ async def whitelist_alert_process(
     _write_policy(policy)
 
     alert.status = "acknowledged"
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=email, action="alert.whitelist", target_type="alert",
                target_id=str(alert.id), details={"rule_id": rule_id, "process_name": process_name})
     db.commit()

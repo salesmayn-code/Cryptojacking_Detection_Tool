@@ -1,4 +1,4 @@
-"""Metrics routes with persistent storage and PH4-aligned ML inference."""
+"""Metrics routes with persistent storage and ensemble ML inference."""
 
 from datetime import datetime
 import json
@@ -173,6 +173,7 @@ def _init_model():
             MODEL_LOADED = True
             print(f"ML model loaded: {model_path}")
             print(f"Feature count: {len(feature_names)}")
+            _init_shap_explainer()
             return
         except Exception as err:
             print(f"Model load error ({model_path}): {err}")
@@ -182,11 +183,14 @@ def _init_model():
     print("ML model not found; using heuristic fallback")
 
 
-_init_model()
-
 # SHAP explainer for anomaly explanation panel
 shap_explainer = None
-if MODEL_LOADED:
+
+
+def _init_shap_explainer():
+    global shap_explainer
+    if not MODEL_LOADED or ml_model is None:
+        return
     try:
         import shap
 
@@ -194,6 +198,9 @@ if MODEL_LOADED:
         print("SHAP TreeExplainer initialized")
     except Exception as shap_err:
         print(f"SHAP init skipped: {shap_err}")
+
+
+_init_model()
 
 
 class MetricsBatch(BaseModel):
@@ -1527,6 +1534,20 @@ def _should_emit_alert(
     )
 
 
+WINDOWS_UNCOLLECTED_FEATURES = {"mem_cached", "mem_active", "cpu_iowait", "cpu_softirq"}
+
+
+def _has_uncollected_linux_memory_counters(metrics: dict) -> bool:
+    mem = metrics.get("memory")
+    if not isinstance(mem, dict):
+        return False
+    used = _to_float(mem.get("used", mem.get("memory_used", 0.0)))
+    pct = _to_float(mem.get("percent", mem.get("memory_percent", 0.0)))
+    cached = _to_float(mem.get("cached", 0.0))
+    active = _to_float(mem.get("active", 0.0))
+    return (used > 0.0 or pct > 0.0) and cached == 0.0 and active == 0.0
+
+
 def _compute_shap_importance(model_input: np.ndarray, raw_row: np.ndarray) -> Dict[str, Dict[str, float]]:
     if shap_explainer is None:
         return {}
@@ -1578,7 +1599,6 @@ def perform_ml_inference(
     cpu_percent = _extract_cpu_percent(metrics)
     memory_percent = _extract_memory_percent(metrics)
     processes = metrics.get("processes", [])
-    process_counts = metrics.get("process_counts", {})
     (
         suspicious_procs,
         miner_indicators,
@@ -1588,7 +1608,6 @@ def perform_ml_inference(
         miner_network_hits,
         policy_hits,
     ) = analyze_processes(processes)
-    high_cpu_count = sum(1 for p in processes if _to_float(p.get("cpu_percent", 0)) > 30)
     now = _safe_parse_timestamp(metrics.get("timestamp"))
     dynamic_evidence = {}
     if _behavior_monitor is not None:
@@ -1632,7 +1651,56 @@ def perform_ml_inference(
             else:
                 confidence = 1.0 if is_cryptojacking else 0.0
 
-            feat_importance = _compute_shap_importance(model_input, raw_row) if is_cryptojacking else {}
+            if _has_uncollected_linux_memory_counters(metrics):
+                shap_map = _compute_shap_importance(model_input, raw_row)
+                if shap_map:
+                    clipped_p = float(np.clip(confidence, 1e-6, 1.0 - 1e-6))
+                    raw_logit = float(np.log(clipped_p / (1.0 - clipped_p)))
+                    uncollected_logit = 0.0
+                    for feat in WINDOWS_UNCOLLECTED_FEATURES:
+                        entry = shap_map.get(feat)
+                        if entry and entry.get("value", 0.0) == 0.0:
+                            uncollected_logit += float(entry.get("shap", 0.0))
+                            entry["shap"] = 0.0
+                    adj_logit = raw_logit - uncollected_logit
+                    confidence = float(1.0 / (1.0 + np.exp(-np.clip(adj_logit, -20.0, 20.0))))
+
+                gpu_block = metrics.get("gpu") if isinstance(metrics.get("gpu"), dict) else {}
+                gpu_util = _to_float(
+                    gpu_block.get("utilization_percent", gpu_block.get("engine_utilization_percent", 0.0))
+                )
+                max_non_sys_cpu = max(
+                    (p.get("cpu", 0.0) for p in high_cpu_non_system),
+                    default=0.0,
+                )
+                strong_miner_signal = bool(
+                    suspicious_procs
+                    or miner_indicators
+                    or threat_intel_hits
+                    or any(h.get("decision") == "deny" for h in policy_hits)
+                )
+                has_compute_pressure = (
+                    cpu_percent >= 55.0
+                    or gpu_util >= 50.0
+                    or max_non_sys_cpu >= 50.0
+                    or strong_miner_signal
+                )
+                if not has_compute_pressure:
+                    if confidence >= 0.50:
+                        confidence = min(confidence * 0.45, 0.42)
+                    is_cryptojacking = False
+                elif cpu_percent >= 90.0 or ((cpu_percent >= 65.0 or gpu_util >= 80.0) and strong_miner_signal):
+                    confidence = max(
+                        confidence,
+                        0.85 if strong_miner_signal or memory_percent >= 60.0 else 0.82,
+                    )
+                    is_cryptojacking = True
+                else:
+                    is_cryptojacking = confidence >= 0.50
+
+                feat_importance = shap_map if is_cryptojacking else {}
+            else:
+                feat_importance = _compute_shap_importance(model_input, raw_row) if is_cryptojacking else {}
             return (
                 is_cryptojacking,
                 float(confidence),
@@ -1649,8 +1717,8 @@ def perform_ml_inference(
         except Exception as err:
             print(f"ML inference error: {err}")
 
-    running_count = int(_to_float(process_counts.get("running", len(processes))))
-    heuristic_hit = cpu_percent >= 90 and (high_cpu_count >= 1 or running_count >= 100 or memory_percent >= 80)
+    # Heuristic fallback detection when the ML model is offline.
+    heuristic_hit = cpu_percent >= 90 or memory_percent >= 80
     heuristic_conf = 0.80 if heuristic_hit else 0.0
     return (
         heuristic_hit,
@@ -1708,10 +1776,20 @@ async def receive_metrics_batch(
         mem = _extract_memory_percent(metrics)
         net = metrics.get("network", {})
         processes = metrics.get("processes", [])
+        sample_time = _safe_parse_timestamp(metrics.get("timestamp"))
+
+        # An agent retry can resend a sample whose response it never received.
+        already_stored = (
+            db.query(SystemMetric.id)
+            .filter(SystemMetric.system_id == batch.system_id, SystemMetric.timestamp == sample_time)
+            .first()
+        )
+        if already_stored:
+            continue
 
         db_metric = SystemMetric(
             system_id=batch.system_id,
-            timestamp=_safe_parse_timestamp(metrics.get("timestamp")),
+            timestamp=sample_time,
             cpu_percent=cpu,
             memory_percent=mem,
             network_bytes_sent=int(_to_float(net.get("bytes_sent", 0))),

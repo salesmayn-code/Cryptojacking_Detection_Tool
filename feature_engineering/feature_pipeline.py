@@ -1,4 +1,4 @@
-"""Compatibility wrapper for the canonical PH4 feature pipeline."""
+"""Compatibility wrapper for the canonical feature pipeline."""
 
 from ml_models.feature_engineering.feature_pipeline import (  # noqa: F401
     FEATURE_BOUNDS,

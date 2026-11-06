@@ -83,7 +83,8 @@ def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key"), db: Session
     if not x_api_key:
         raise HTTPException(status_code=401, detail="API key required")
 
-    user = db.query(User).filter(User.api_key == x_api_key).first()
+    candidates = [User.hash_api_key(x_api_key), x_api_key]
+    user = db.query(User).filter(User.api_key.in_(candidates)).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -91,7 +92,7 @@ def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key"), db: Session
         "email": user.email,
         "full_name": user.full_name,
         "system_id": user.system_id,
-        "api_key": user.api_key,
+        "api_key": User.mask_api_key(user.api_key),
         "role": user.role
     }
 
@@ -113,7 +114,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
         full_name=user_data.full_name,
         hashed_password=pwd_context.hash(user_data.password),
         system_id=system_id,
-        api_key=api_key
+        api_key=User.hash_api_key(api_key)
     )
     db.add(new_user)
 
@@ -135,7 +136,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.add(new_system)
     db.commit()
 
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=user_data.email, action="user.register", target_type="user",
                target_id=user_data.email, details={"system_id": system_id})
     db.commit()
@@ -175,7 +176,7 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
             "email": user.email,
             "full_name": user.full_name,
             "system_id": user.system_id,
-            "api_key": user.api_key,
+            "api_key": User.mask_api_key(user.api_key),
             "role": user.role,
             "profile_picture_url": user.profile_picture_url
         }
@@ -194,7 +195,7 @@ async def get_profile(email: str = Depends(verify_token), db: Session = Depends(
         "email": user.email,
         "full_name": user.full_name,
         "system_id": user.system_id,
-        "api_key": user.api_key,
+        "api_key": User.mask_api_key(user.api_key),
         "role": user.role,
         "profile_picture_url": user.profile_picture_url,
         "password_updated_at": user.password_updated_at.isoformat() if user.password_updated_at else None,
@@ -225,10 +226,30 @@ async def update_profile(update: ProfileUpdate, email: str = Depends(verify_toke
             "email": user.email,
             "full_name": user.full_name,
             "system_id": user.system_id,
-            "api_key": user.api_key,
+            "api_key": User.mask_api_key(user.api_key),
             "role": user.role,
             "profile_picture_url": user.profile_picture_url
         }
+    }
+
+
+@router.post("/profile/api-key")
+async def regenerate_api_key(email: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """Rotate user API key: store SHA-256 hash at rest and return new raw key once."""
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    new_key = User.generate_api_key()
+    user.api_key = User.hash_api_key(new_key)
+    from backend.services.audit_service import log_action
+    log_action(db, actor=email, action="user.api_key_rotate", target_type="user", target_id=email)
+    db.commit()
+
+    return {
+        "status": "success",
+        "api_key": new_key,
+        "masked_api_key": User.mask_api_key(user.api_key),
     }
 
 
@@ -249,7 +270,7 @@ async def update_password(payload: PasswordChange, email: str = Depends(verify_t
 
     user.hashed_password = pwd_context.hash(payload.new_password)
     user.password_updated_at = datetime.utcnow()
-    from services.audit_service import log_action
+    from backend.services.audit_service import log_action
     log_action(db, actor=email, action="user.password_change", target_type="user",
                target_id=email)
     db.commit()
@@ -332,7 +353,8 @@ async def agent_bootstrap(user: dict = Depends(verify_api_key), db: Session = De
 @router.post("/agent/validate")
 async def agent_validate(payload: AgentValidateRequest, db: Session = Depends(get_db)):
     """Validate explicit System ID + API key combination for GUI setup mode."""
-    user = db.query(User).filter(User.api_key == payload.api_key, User.system_id == payload.system_id).first()
+    candidates = [User.hash_api_key(payload.api_key), payload.api_key]
+    user = db.query(User).filter(User.api_key.in_(candidates), User.system_id == payload.system_id).first()
     if not user:
         return {
             "valid": False,

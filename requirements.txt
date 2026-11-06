@@ -45,6 +45,10 @@ py-cpuinfo==9.0.0
 pystray==0.19.5
 Pillow==10.2.0
 pywin32==306
+nvidia-ml-py==13.615.71
+
+# Agent Packaging
+pyinstaller==6.3.0
 
 # Report Generation
 reportlab==4.0.9

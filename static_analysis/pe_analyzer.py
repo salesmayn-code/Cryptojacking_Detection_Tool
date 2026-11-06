@@ -4,12 +4,17 @@ PE Binary Analyzer - Extract features from PE executables
 import pefile
 import os
 import math
+from collections import Counter
 from typing import Dict, Optional
 import hashlib
 
 
 class PEAnalyzer:
-    def __init__(self):
+    ENTROPY_CHUNK_BYTES = 1024 * 1024
+
+    def __init__(self, max_scan_bytes: Optional[int] = None):
+        # Entropy covers only the first max_scan_bytes of a file; None covers the whole file.
+        self.max_scan_bytes = max_scan_bytes
         self.suspicious_sections = ['.text', '.data', '.rsrc', '.reloc']
         
     def analyze_file(self, file_path: str) -> Optional[Dict]:
@@ -27,8 +32,17 @@ class PEAnalyzer:
             return None
         
         try:
-            pe = pefile.PE(file_path)
-            
+            pe = pefile.PE(file_path, fast_load=True)
+            # With a scan limit, skip export and resource tables: they can be large, and
+            # their counts are then reported as 0.
+            directories = [pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']]
+            if self.max_scan_bytes is None:
+                directories += [
+                    pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT'],
+                    pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_RESOURCE'],
+                ]
+            pe.parse_data_directories(directories=directories)
+
             features = {
                 # File properties
                 'file_size': os.path.getsize(file_path),
@@ -73,6 +87,8 @@ class PEAnalyzer:
     def _calculate_section_entropy(self, pe) -> Dict[str, float]:
         """Calculate entropy for each section"""
         section_entropy = {}
+        if self.max_scan_bytes is not None:
+            return section_entropy
         for section in pe.sections:
             section_name = section.Name.decode().strip('\x00')
             entropy = section.get_entropy()
@@ -81,24 +97,28 @@ class PEAnalyzer:
     
     def _calculate_total_entropy(self, file_path: str) -> float:
         """Calculate entropy of entire file"""
-        with open(file_path, 'rb') as f:
-            data = f.read()
-        
-        if not data:
-            return 0.0
-        
         # Calculate byte frequency
-        byte_counts = [0] * 256
-        for byte in data:
-            byte_counts[byte] += 1
-        
+        byte_counts = Counter()
+        data_len = 0
+        with open(file_path, 'rb') as f:
+            while self.max_scan_bytes is None or data_len < self.max_scan_bytes:
+                read_size = self.ENTROPY_CHUNK_BYTES
+                if self.max_scan_bytes is not None:
+                    read_size = min(read_size, self.max_scan_bytes - data_len)
+                chunk = f.read(read_size)
+                if not chunk:
+                    break
+                byte_counts.update(chunk)
+                data_len += len(chunk)
+
+        if not data_len:
+            return 0.0
+
         # Calculate entropy
         entropy = 0.0
-        data_len = len(data)
-        for count in byte_counts:
-            if count > 0:
-                freq = count / data_len
-                entropy -= freq * math.log2(freq)
+        for count in byte_counts.values():
+            freq = count / data_len
+            entropy -= freq * math.log2(freq)
         
         return round(entropy, 2)
     
