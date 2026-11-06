@@ -1,9 +1,6 @@
 # Build script for creating Windows .exe from agent_gui.py
 # Uses PyInstaller
 
-# Install PyInstaller first:
-# pip install pyinstaller
-
 import subprocess
 import sys
 from pathlib import Path
@@ -14,88 +11,94 @@ def _project_root() -> Path:
 
 
 def ensure_icon_file() -> Path | None:
-    """Create a simple tray icon if one is not already present."""
-    icon_path = Path("agent_icon.ico")
-    if icon_path.exists():
-        return icon_path
-
+    """Generate a high-DPI multi-resolution shield + waveform .ico file."""
+    icon_path = Path(__file__).resolve().parent / "agent_icon.ico"
     try:
-        from PIL import Image, ImageDraw
+        from agent_gui import create_shield_icon
 
-        image = Image.new("RGB", (64, 64), color=(24, 34, 54))
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((8, 8, 56, 56), outline=(72, 126, 245), width=3)
-        draw.text((19, 21), "CD", fill=(72, 126, 245))
-        image.save(icon_path, format="ICO")
-        print("Generated fallback tray icon")
-        return icon_path
+        base_img = create_shield_icon(size=256)
+        if base_img is not None:
+            base_img.save(
+                icon_path,
+                format="ICO",
+                sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+            )
+            print("Generated multi-resolution shield icon:", icon_path)
+            return icon_path
     except Exception as exc:
         print(f"Tray icon generation skipped: {exc}")
-        return None
+    return icon_path if icon_path.exists() else None
+
 
 def build_exe():
     """Build Windows executable"""
-    
-    print("="*60)
-    print("  BUILDING CRYPTODETECT AGENT .EXE")
-    print("="*60)
-    
-    # Check if PyInstaller is installed
+
+    print("=" * 60)
+    print("  BUILDING CRYPTODETECT AGENT v9.0 .EXE")
+    print("=" * 60)
+
     try:
-        import PyInstaller
+        import PyInstaller  # noqa: F401
         print("PyInstaller found")
     except ImportError:
         print("PyInstaller not found. Installing...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
-    
-    project_root = _project_root()
 
-    # Build command
+    project_root = _project_root()
+    agent_dir = Path(__file__).resolve().parent
+
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
-        "--onefile",  # Single executable
-        "--windowed",  # Hide console and run as tray app
-        "--name=CryptoDetect-Agent-v9",  # Output name
+        "--noconfirm",
+        "--clean",
+        "--onefile",
+        "--windowed",
+        "--name=CryptoDetect-Agent-v9",
         "--hidden-import=psutil",
         "--hidden-import=requests",
         "--hidden-import=hashlib",
         "--hidden-import=pystray",
         "--hidden-import=PIL",
+        "--hidden-import=PIL.ImageTk",
         "--hidden-import=pythoncom",
         "--hidden-import=pywintypes",
         "--hidden-import=win32com",
         "--hidden-import=win32com.client",
-        "--add-data=README.txt:.",  # Include readme
         "--hidden-import=auto_updater",
         f"--paths={project_root}",
         "--hidden-import=static_analysis",
         "--hidden-import=static_analysis.pe_analyzer",
         "--hidden-import=static_analysis.string_extractor",
         "--hidden-import=pefile",
-        "agent_gui.py"
+        "--hidden-import=pynvml",
+        "agent_gui.py",
     ]
-    
-    # Add icon if exists
+
+    readme_path = agent_dir / "README.txt"
+    if readme_path.exists():
+        command.insert(-1, "--add-data=README.txt;.")
+
     icon_path = ensure_icon_file()
     if icon_path and icon_path.exists():
         command.append(f"--icon={icon_path}")
         print("Using custom icon")
-    
-    print(f"\nBuilding executable...")
+
+    print("\nBuilding executable...")
     print(f"   Command: {' '.join(command)}\n")
-    
+
     try:
-        subprocess.check_call(command)
-        print("\n" + "="*60)
+        subprocess.check_call(command, cwd=str(agent_dir))
+        print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL")
         print("   Output: dist/CryptoDetect-Agent-v9.exe")
-        print("="*60)
+        print("=" * 60)
         return True
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed: {e}")
         return False
+
 
 if __name__ == "__main__":
     build_exe()

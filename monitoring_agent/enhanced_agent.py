@@ -1,7 +1,7 @@
 """
-CryptoDetect Monitoring Agent v5.0
+CryptoDetect Monitoring Agent v9.0
 - Tray-compatible monitoring engine used by agent_gui.py
-- Emits PH4 telemetry fields for 20-feature ML inference
+- Emits host telemetry fields for 20-feature ML inference
 - Keeps legacy keys for backward compatibility
 """
 import psutil
@@ -13,6 +13,8 @@ import sys
 import os
 import subprocess
 import ipaddress
+import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -22,13 +24,6 @@ try:
     HAS_CTYPES = True
 except ImportError:
     HAS_CTYPES = False
-
-try:
-    import win32com.client
-    import pythoncom
-    HAS_WMI = True
-except Exception:
-    HAS_WMI = False
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +40,11 @@ except Exception:
     STATIC_ANALYSIS_AVAILABLE = False
 
 
+try:
+    from auto_updater import CURRENT_VERSION as AGENT_VERSION
+except Exception:
+    AGENT_VERSION = "9.0"
+
 CONFIG_DIR = Path.home() / ".cryptodetect"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
@@ -58,8 +58,13 @@ class MonitoringAgent:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.max_entries = 60
         self.interval = 5
-        # Default to near real-time upload every interval. Can be increased via AGENT_BATCH_SIZE.
-        self.batch_size = max(1, int(os.getenv("AGENT_BATCH_SIZE", "1")))
+        # Upload every 30 seconds (6 samples at 5 seconds each). Override with AGENT_BATCH_SIZE.
+        self.batch_size = max(1, int(os.getenv("AGENT_BATCH_SIZE", "6")))
+        # An empty batch every 10 seconds keeps last_seen inside the 30-second offline window.
+        self.heartbeat_cycles = 2
+        # Samples wait here, on disk, until the backend confirms it received them.
+        self.pending_file = self.metrics_dir / f"pending_{system_id}.json"
+        self.pending = self._load_pending()
         self.verbose = verbose
         self.running = False
         self._last_net_snapshot = None
@@ -68,11 +73,23 @@ class MonitoringAgent:
         self._max_load_samples = 180
         self._static_cache = {}
         self._signature_cache = {}
-        self._pe_analyzer = PEAnalyzer() if STATIC_ANALYSIS_AVAILABLE else None
-        self._string_extractor = StringExtractor() if STATIC_ANALYSIS_AVAILABLE else None
+        self._hash_cache = {}
+        self._static_queue = queue.Queue()
+        self._static_queued = set()
+        self._static_lock = threading.Lock()
+        self._static_worker = None
+        # Limits each file scan's CPU and memory; large programs are only partly searched.
+        max_scan_bytes = 32 * 1024 * 1024
+        self._pe_analyzer = PEAnalyzer(max_scan_bytes) if STATIC_ANALYSIS_AVAILABLE else None
+        self._string_extractor = StringExtractor(max_scan_bytes) if STATIC_ANALYSIS_AVAILABLE else None
         self._miner_ports = {3333, 3334, 4444, 5555, 6666, 7777, 9999, 14433, 14444}
         self._gpu_wmi_initialized = False
         self._gpu_wmi = None
+        self._nvml = None
+        self._nvml_handle = None
+        self._parent_cache = {}
+        self._process_detail_counts = None
+        self._process_detail_time = 0.0
         # Prime psutil non-blocking CPU percent sampler for accurate deltas.
         psutil.cpu_percent(interval=None)
 
@@ -290,6 +307,36 @@ class MonitoringAgent:
         self._static_cache[cache_key] = result
         return result
 
+    def _get_static_evidence_nowait(self, exe_path, exe_hash):
+        """Return cached evidence, or None while a background thread scans the file."""
+        if not STATIC_ANALYSIS_AVAILABLE or not exe_path:
+            return None
+
+        cache_key = exe_hash or exe_path
+        if cache_key in self._static_cache:
+            return self._static_cache[cache_key]
+
+        with self._static_lock:
+            if cache_key not in self._static_queued:
+                self._static_queued.add(cache_key)
+                self._static_queue.put((cache_key, exe_path, exe_hash))
+            if self._static_worker is None or not self._static_worker.is_alive():
+                self._static_worker = threading.Thread(target=self._run_static_worker, daemon=True)
+                self._static_worker.start()
+        return None
+
+    def _run_static_worker(self):
+        while True:
+            try:
+                cache_key, exe_path, exe_hash = self._static_queue.get(timeout=30)
+            except queue.Empty:
+                return
+            try:
+                self._collect_static_evidence(exe_path, exe_hash)
+            finally:
+                with self._static_lock:
+                    self._static_queued.discard(cache_key)
+
     def filter_processes(self):
         processes = []
         benign_processes = {
@@ -298,7 +345,8 @@ class MonitoringAgent:
             "winlogon.exe", "fontdrvhost.exe", "sihost.exe", "taskhostw.exe",
             "runtimebroker.exe", "searchindexer.exe",
         }
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'ppid']):
+        candidates = []
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
             try:
                 info = proc.info
                 name_norm = self._normalize_name(info.get('name'))
@@ -308,52 +356,70 @@ class MonitoringAgent:
                 memory_percent = float(info.get('memory_percent') or 0.0)
                 is_svchost = name_norm == "svchost.exe"
                 if cpu_percent > 4.0 or memory_percent > 4.0 or is_svchost:
-                    try:
-                        exe_path = proc.exe()
-                        exe_hash = self._file_hash(exe_path)
-                    except (psutil.AccessDenied, psutil.NoSuchProcess):
-                        exe_path = None
-                        exe_hash = None
-                    try:
-                        create_time = float(proc.create_time())
-                    except (psutil.AccessDenied, psutil.NoSuchProcess, ValueError, TypeError):
-                        create_time = None
-                    parent_info = self._get_parent_process_info(proc)
-                    signature_info = self._get_signature_info(exe_path, exe_hash)
-                    net_summary = self._get_process_network_summary(proc)
-                    static_evidence = None
-                    if cpu_percent >= 20.0:
-                        static_evidence = self._collect_static_evidence(exe_path, exe_hash)
-                    processes.append({
-                        'pid': info['pid'],
-                        'name': info['name'],
-                        'cpu_percent': round(cpu_percent, 2),
-                        'memory_percent': round(memory_percent, 2),
-                        'exe_path': exe_path,
-                        'exe_hash': exe_hash,
-                        'create_time': create_time,
-                        'parent_pid': parent_info.get("parent_pid"),
-                        'parent_name': parent_info.get("parent_name"),
-                        'signature_status': signature_info.get("signature_status", "unknown"),
-                        'publisher': signature_info.get("publisher", ""),
-                        'is_trusted_signature': bool(signature_info.get("is_trusted_signature", False)),
-                        'network_summary': net_summary,
-                        'static_analysis': static_evidence,
-                    })
+                    candidates.append((proc, info, cpu_percent, memory_percent))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-        processes.sort(key=lambda x: x['cpu_percent'], reverse=True)
-        return processes[:18]
+
+        # Only the top 18 are reported, so only they need the slower per-process lookups.
+        candidates.sort(key=lambda c: c[2], reverse=True)
+        parent_cache = {}
+        for proc, info, cpu_percent, memory_percent in candidates[:18]:
+            try:
+                try:
+                    exe_path = proc.exe()
+                    exe_hash = self._file_hash(exe_path)
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    exe_path = None
+                    exe_hash = None
+                try:
+                    create_time = float(proc.create_time())
+                except (psutil.AccessDenied, psutil.NoSuchProcess, ValueError, TypeError):
+                    create_time = None
+                process_key = (info['pid'], create_time)
+                parent_info = self._parent_cache.get(process_key)
+                if parent_info is None:
+                    parent_info = self._get_parent_process_info(proc)
+                parent_cache[process_key] = parent_info
+                signature_info = self._get_signature_info(exe_path, exe_hash)
+                net_summary = self._get_process_network_summary(proc)
+                static_evidence = None
+                if cpu_percent >= 20.0:
+                    static_evidence = self._get_static_evidence_nowait(exe_path, exe_hash)
+                processes.append({
+                    'pid': info['pid'],
+                    'name': info['name'],
+                    'cpu_percent': round(cpu_percent, 2),
+                    'memory_percent': round(memory_percent, 2),
+                    'exe_path': exe_path,
+                    'exe_hash': exe_hash,
+                    'create_time': create_time,
+                    'parent_pid': parent_info.get("parent_pid"),
+                    'parent_name': parent_info.get("parent_name"),
+                    'signature_status': signature_info.get("signature_status", "unknown"),
+                    'publisher': signature_info.get("publisher", ""),
+                    'is_trusted_signature': bool(signature_info.get("is_trusted_signature", False)),
+                    'network_summary': net_summary,
+                    'static_analysis': static_evidence,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        self._parent_cache = parent_cache
+        return processes
 
     def _file_hash(self, filepath):
         if not filepath or not os.path.exists(filepath):
             return None
         try:
+            stat = os.stat(filepath)
+            cache_key = (filepath, stat.st_mtime_ns, stat.st_size)
+            if cache_key in self._hash_cache:
+                return self._hash_cache[cache_key]
             sha256 = hashlib.sha256()
             with open(filepath, 'rb') as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     sha256.update(chunk)
-            return sha256.hexdigest()
+            self._hash_cache[cache_key] = sha256.hexdigest()
+            return self._hash_cache[cache_key]
         except:
             return None
 
@@ -416,10 +482,13 @@ class MonitoringAgent:
         if self._gpu_wmi_initialized:
             return self._gpu_wmi is not None
         self._gpu_wmi_initialized = True
-        if os.name != "nt" or not HAS_WMI:
+        if os.name != "nt":
             self._gpu_wmi = None
             return False
         try:
+            import pythoncom
+            import win32com.client
+
             pythoncom.CoInitialize()
             locator = win32com.client.Dispatch("WbemScripting.SWbemLocator")
             self._gpu_wmi = locator.ConnectServer(".", "root\\CIMV2")
@@ -435,7 +504,25 @@ class MonitoringAgent:
         except Exception:
             return default
 
-    def _collect_gpu_metrics_nvidia(self):
+    def _query_nvml(self):
+        """Read the first NVIDIA GPU in-process; return None if NVML can't be used."""
+        if self._nvml_handle is False:
+            return None
+        try:
+            if self._nvml_handle is None:
+                import pynvml
+
+                pynvml.nvmlInit()
+                self._nvml = pynvml
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            memory = self._nvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+            utilization = self._nvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+            return float(utilization.gpu), memory.used / (1024 * 1024), memory.total / (1024 * 1024)
+        except Exception:
+            self._nvml_handle = False
+            return None
+
+    def _query_nvidia_smi(self):
         try:
             startupinfo, creationflags = self._windows_startupinfo()
             completed = subprocess.run(
@@ -458,16 +545,27 @@ class MonitoringAgent:
             parts = [p.strip() for p in line[0].split(",")]
             if len(parts) < 3:
                 return None
-            util = float(parts[0])
-            mem_used = float(parts[1])
-            mem_total = float(parts[2])
+            return float(parts[0]), float(parts[1]), float(parts[2])
         except Exception:
             return None
 
+    def _collect_gpu_metrics_nvidia(self):
+        reading = self._query_nvml()
+        source = "nvml"
+        if reading is None:
+            reading = self._query_nvidia_smi()
+            source = "nvidia-smi"
+        if reading is None:
+            return None
+        return self._format_nvidia_metrics(reading, source)
+
+    @staticmethod
+    def _format_nvidia_metrics(reading, source):
+        util, mem_used, mem_total = reading
         mem_percent = (mem_used / mem_total * 100.0) if mem_total > 0 else 0.0
         return {
             "available": True,
-            "source": "nvidia-smi",
+            "source": source,
             "utilization_percent": round(util, 2),
             "engine_utilization_percent": round(util, 2),
             "memory_used_mb": round(mem_used, 2),
@@ -478,6 +576,11 @@ class MonitoringAgent:
         }
 
     def _collect_gpu_metrics(self):
+        # NVML is far cheaper than WMI, so WMI is only used on machines without it.
+        reading = self._query_nvml()
+        if reading is not None:
+            return self._format_nvidia_metrics(reading, "nvml")
+
         if not self._init_gpu_wmi():
             fallback = self._collect_gpu_metrics_nvidia()
             if fallback:
@@ -574,19 +677,25 @@ class MonitoringAgent:
         }
 
     def _collect_process_counts(self):
-        running = 0
-        thread_total = 0
         total = len(psutil.pids())
 
-        for proc in psutil.process_iter(['status', 'num_threads']):
-            try:
-                status = proc.info.get('status')
-                if status == psutil.STATUS_RUNNING:
-                    running += 1
-                thread_total += int(proc.info.get('num_threads') or 0)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
+        # Per-process status and thread counts are slow on Windows, so refresh them every 30 seconds.
+        now = time.monotonic()
+        if self._process_detail_counts is None or now - self._process_detail_time >= 30:
+            running = 0
+            thread_total = 0
+            for proc in psutil.process_iter(['status', 'num_threads']):
+                try:
+                    status = proc.info.get('status')
+                    if status == psutil.STATUS_RUNNING:
+                        running += 1
+                    thread_total += int(proc.info.get('num_threads') or 0)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            self._process_detail_counts = (running, thread_total)
+            self._process_detail_time = now
 
+        running, thread_total = self._process_detail_counts
         if thread_total <= 0:
             thread_total = total
 
@@ -653,10 +762,39 @@ class MonitoringAgent:
             data.append(metrics)
             data = data[-self.max_entries:]
             with open(json_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                json.dump(data, f)
             return data
         except:
             return []
+
+    def _load_pending(self):
+        try:
+            data = json.loads(self.pending_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return data[-self.max_entries:] if isinstance(data, list) else []
+
+    def _save_pending(self):
+        try:
+            self.pending_file.write_text(json.dumps(self.pending), encoding="utf-8")
+        except OSError as e:
+            print(f"  [ERROR] Could not save pending metrics: {e}")
+
+    def _queue_sample(self, metrics):
+        self.pending = (self.pending + [metrics])[-self.max_entries:]
+        self._save_pending()
+
+    def _mark_sent(self, sent_count):
+        self.pending = self.pending[sent_count:]
+        self._save_pending()
+
+    def _next_payload(self, count):
+        """Return samples to upload this cycle, [] for a heartbeat, or None to send nothing."""
+        if count % self.batch_size == 0:
+            return list(self.pending)
+        if count % self.heartbeat_cycles == 0:
+            return []
+        return None
 
     def send_batch(self, metrics_batch):
         try:
@@ -664,12 +802,13 @@ class MonitoringAgent:
                 f"{self.api_url}/api/metrics/batch",
                 json={'system_id': self.system_id, 'metrics': metrics_batch},
                 headers={'X-API-Key': self.api_key},
-                timeout=10
+                timeout=30 if metrics_batch else 10
             )
             if resp.status_code == 200:
                 result = resp.json()
                 model = result.get('model_used', '?')
-                self._log(f"  [SENT] {len(metrics_batch)} metrics | Model: {model}")
+                if metrics_batch:
+                    self._log(f"  [SENT] {len(metrics_batch)} metrics | Model: {model}")
                 if result.get('alerts'):
                     for a in result['alerts']:
                         confidence_pct = a.get('confidence', 0) * 100
@@ -735,10 +874,14 @@ class MonitoringAgent:
             try:
                 m = self.collect_metrics()
                 if m:
-                    batch = self.save_local(m)
+                    self.save_local(m)
+                    self._queue_sample(m)
                     count += 1
-                    if count % self.batch_size == 0:
-                        result = self.send_batch(batch[-self.batch_size:])
+                    payload = self._next_payload(count)
+                    if payload is not None:
+                        result = self.send_batch(payload)
+                        if result is True and payload:
+                            self._mark_sent(len(payload))
                         if result == "auth_error":
                             auth_failures += 1
                             if auth_failures >= 1:
@@ -858,7 +1001,7 @@ def prompt_credentials():
 
 def main():
     print(f"\n{'='*60}")
-    print(f"  CRYPTODETECT MONITORING AGENT v5.0")
+    print(f"  CRYPTODETECT MONITORING AGENT v{AGENT_VERSION}")
     print(f"  Real-time Cryptojacking Detection")
     print(f"{'='*60}")
 
