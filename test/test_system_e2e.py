@@ -1,8 +1,7 @@
 """
 CryptoDetect – System Tests: End-to-End Simulation
 ===================================================
-Simulates the complete pipeline: agent → backend → ML inference → alert
-as described in Chapter 6.4 (System Testing) of the FYP report.
+Simulates the complete pipeline: agent → backend → ML inference → alert.
 Covers: normal operation, threat detection, sustained-gate logic,
 security (auth bypass), and offline buffering.
 """

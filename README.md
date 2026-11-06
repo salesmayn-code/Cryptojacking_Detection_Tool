@@ -6,9 +6,9 @@ network telemetry to a FastAPI backend; machine-learning models score the
 telemetry and raise alerts; a React dashboard gives users and administrators
 visibility into monitored systems, alerts, reports, and audit logs.
 
-The project combines a final-year capstone implementation with a documented
-machine-learning pipeline: shared feature engineering, separate Random Forest
-and XGBoost training scripts, evaluation reports, and saved model artifacts.
+The platform includes a reproducible machine-learning pipeline with shared
+feature engineering, Random Forest and XGBoost training scripts, chronological
+evaluation reports, and pre-trained model artifacts for immediate local execution.
 
 ## Screenshots
 
@@ -51,11 +51,13 @@ Supporting pipelines:
 
 ### Monitoring agent
 
-`monitoring_agent/agent.py` collects system metrics with `psutil` at a
-configurable interval and posts them to the backend. It buffers failed
-submissions and retries them, and supports a system identifier supplied on the
-command line. `agent_gui.py`, `build_exe.py`, and the auto-updater provide the
-packaged Windows agent experience.
+`monitoring_agent/agent.py` starts the agent implemented in `enhanced_agent.py`.
+It samples CPU, GPU, memory, network, and process metrics every 5 seconds, keeps
+a local cache of 60 entries, uploads a batch every 30 seconds, and sends a
+heartbeat every 10 seconds. Samples stay queued on disk until the backend
+confirms them, so failed uploads are retried with the next batch; during an
+outage the newest 60 samples are kept. `agent_gui.py`, `build_exe.py`, and the auto-updater
+provide the packaged Windows agent experience.
 
 ### API backend
 
@@ -88,8 +90,56 @@ a PostgreSQL URL through `DATABASE_URL`. Alembic migrations are included.
   writes a comparison report plus model metadata.
 
 Training expects the source CSV files under `ml_models/datasets/` and writes
-artifacts to `ml_models/saved_models/`. Datasets and trained artifacts are not
-committed to the repository.
+artifacts to `ml_models/saved_models/`. Pre-trained lightweight artifacts are
+included under `ml_models/saved_models/` so the API runs full ML + SHAP scoring
+locally out of the box; raw dataset CSVs are excluded from version control.
+Metrics, confusion matrices, and a SHAP feature-importance plot are written to
+`docs/results/`.
+
+### Dataset
+
+The behavioral models use the
+[Cryptojacking Attack Timeseries Dataset](https://www.kaggle.com/datasets/keshanijayasinghe/cryptojacking-attack-timeseries-dataset)
+by Keshani Jayasinghe (Kaggle, version 1, CC0: Public Domain). It records a
+server instance's performance metrics during normal operation and during a
+cryptojacking attack.
+
+| Class | File | Samples |
+|---|---|---:|
+| Normal | `final-normal-data-set.csv` | 80,851 |
+| Cryptojacking | `final-anormal-data-set.csv` | 14,461 |
+| **Total** | | **95,312** |
+
+Cryptojacking samples make up about 15% of the data. Sample counts are as
+reported by
+[Faieq and Rasheed (2026)](https://doi.org/10.18280/ijsse.160112). Preprocessing
+drops any rows with missing values, so the final count can be slightly lower.
+
+### Evaluation method
+
+Telemetry samples close in time are highly similar, so a random split can put
+near-duplicates in both the training and test sets and inflate scores. The
+models are trained and tested on a chronological split: each class is divided
+by time into 70% train, 15% validation, and 15% test. Random-split scores are
+reported only for comparison, alongside a baseline rule that uses `cpu_total`
+alone.
+
+### Known limitations
+
+- **Training and deployment environments differ.** The dataset comes from a
+  Linux server, while the monitoring agent runs on Windows. `cpu_iowait`,
+  `cpu_softirq`, `mem_active`, and `mem_cached` are 0 on Windows, and
+  `load_min1`, `load_min5`, and `load_min15` are estimated from CPU usage.
+- **Network features measure different traffic.** The dataset records loopback
+  traffic (`network_lo_*`), while the agent reports traffic across all network
+  interfaces.
+- **Machine size differs.** The dataset's per-CPU columns cover a single core.
+  One miner thread that fills that core may use only a small share of a larger
+  desktop's CPU, and memory features recorded in bytes also depend on machine
+  size.
+- **Test scores come from the dataset's environment.** They do not measure
+  detection accuracy on live Windows machines, or against legitimate
+  high-CPU workloads that the dataset may not include.
 
 ### Dashboard
 
@@ -168,12 +218,11 @@ The dashboard runs at `http://localhost:3000`.
 ### 3. Monitoring agent
 
 ```powershell
-$env:API_URL="http://localhost:8000"
-python monitoring_agent/agent.py <SYSTEM_ID>
+python monitoring_agent/agent.py --api-key <API_KEY> --api-url http://localhost:8000
 ```
 
-The agent posts a metrics snapshot every `AGENT_UPDATE_INTERVAL` seconds
-(default 5) and retries buffered snapshots when the API is unavailable.
+Set `AGENT_BATCH_SIZE` to change how many 5-second samples go in each upload
+(default 6, which is every 30 seconds).
 
 ## Training the models
 
@@ -222,4 +271,4 @@ API integration tests, performance checks, and an end-to-end system flow.
   exposing the API publicly.
 - The development default for `SECRET_KEY` must be replaced in any deployed
   environment.
-- Model datasets and binaries are intentionally excluded from version control.
+- Raw training datasets and compiled Windows `.exe` bundles are excluded from version control.

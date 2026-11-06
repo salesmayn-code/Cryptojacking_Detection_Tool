@@ -2,9 +2,7 @@
 CryptoDetect – Performance Tests
 =================================
 Benchmarks inference latency, API response time, and agent resource
-footprint to validate the targets defined in Chapter 6.6 of the FYP.
-
-Performance Targets (from FYP Chapter 6.6):
+footprint against service-level performance targets:
   - ML inference        < 1 000 ms
   - API response time   <   500 ms
   - Agent CPU footprint <     2 %

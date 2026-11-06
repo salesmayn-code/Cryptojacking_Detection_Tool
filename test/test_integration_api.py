@@ -3,7 +3,6 @@ CryptoDetect – Integration Tests: REST API Endpoints
 =====================================================
 Tests data flow between the Monitoring Agent, FastAPI backend,
 and database layer. Uses FastAPI TestClient (no live server needed).
-Chapter 6.3 (Integration Testing) of the FYP report.
 """
 import pytest
 import json
@@ -18,7 +17,7 @@ from datetime import datetime
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Minimal stub of the CryptoDetect FastAPI app
-#  (mirrors the real endpoints described in Chapters 4 & 5)
+#  (mirrors the production API endpoints)
 # ─────────────────────────────────────────────────────────────────────────────
 
 app   = FastAPI(title="CryptoDetect API – Test Stub")
@@ -35,7 +34,7 @@ VALID_SYSTEM_ID = "SYS-TEST001"
 # Seed a test system
 _systems[VALID_SYSTEM_ID] = {
     "system_id": VALID_SYSTEM_ID,
-    "owner": "saleh@test.com",
+    "owner": "operator@test.com",
     "status": "offline",
     "last_seen": None,
     "api_key": VALID_API_KEY,

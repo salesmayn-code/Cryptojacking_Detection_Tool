@@ -61,8 +61,7 @@ venv/
 /backend/*.sqlite
 /backend/*.sqlite3
 
-# machine learning artifacts / data drops
-/ml_models/saved_models/
+# machine learning data drops & local evaluation runs
 /ml_models/evaluation/
 /ml_models/datasets/
 /ml_models/__pycache__/
@@ -79,12 +78,13 @@ test_report.html
 *.bak
 *.orig
 
-# published docs / manuscripts
+# local notes / documents
 *.md
 !README.md
+!docs/results/results.md
 *.markdown
 *.docx
-/Dcox/
+*.pdf
 /monitoring_agent/README.txt
 /test/*.md
 /tools/xmrig-safe-lab/README.md

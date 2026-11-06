@@ -3,7 +3,6 @@ CryptoDetect – Unit Tests: Feature Extraction & ML Inference
 =============================================================
 Validates the 20-feature vector pipeline, heuristic rules,
 sustained-detection gate, and ML model confidence thresholds.
-Chapter 6.2 (Unit Testing) of the FYP report.
 """
 import pytest
 import numpy as np

@@ -59,7 +59,7 @@ def sample_process_suspicious():
 
 @pytest.fixture
 def valid_user():
-    return {"email": "saleh@test.com", "password": "SecurePass123!", "full_name": "Saleh Janjua"}
+    return {"email": "operator@test.com", "password": "SecurePass123!", "full_name": "Security Operator"}
 
 
 @pytest.fixture

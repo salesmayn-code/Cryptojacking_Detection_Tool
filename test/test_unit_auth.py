@@ -1,8 +1,7 @@
 """
 CryptoDetect – Unit Tests: Authentication Module
 =================================================
-Tests JWT token generation/validation and bcrypt password hashing
-as described in Chapter 6.2 (Unit Testing) of the FYP report.
+Tests JWT token generation/validation and bcrypt password hashing.
 """
 import pytest
 import time
