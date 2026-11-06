@@ -1,5 +1,5 @@
 // API Configuration and Service Layer
-import axios from 'axios/dist/browser/axios.cjs';
+import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -47,6 +47,7 @@ export const authAPI = {
     login: (data) => api.post('/api/auth/login', data),
     getProfile: () => api.get('/api/auth/profile'),
     updateProfile: (data) => api.put('/api/auth/profile', data),
+    regenerateApiKey: () => api.post('/api/auth/profile/api-key'),
     changePassword: (data) => api.put('/api/auth/profile/password', data),
     uploadProfilePicture: (file) => {
         const formData = new FormData();

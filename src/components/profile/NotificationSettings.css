@@ -1,11 +1,11 @@
 /* ── Notification Settings ────────────────────────────── */
 
 .notif-section {
-    margin-top: 2rem;
+    margin-top: 0;
 }
 
 .notif-section-title {
-    font-size: 1rem;
+    font-size: 0.9375rem;
     font-weight: 700;
     color: var(--text-primary);
     margin-bottom: 1rem;
@@ -14,12 +14,14 @@
     gap: 0.5rem;
 }
 
-.notif-section-title svg { color: var(--primary-color); }
+.notif-section-title svg {
+    color: var(--primary-color);
+}
 
 /* Add channel form */
 .notif-add-form {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.625rem;
     align-items: flex-end;
     margin-bottom: 1.25rem;
     flex-wrap: wrap;
@@ -28,76 +30,81 @@
 .notif-add-form .form-group {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 0.25rem;
     margin: 0;
 }
 
 .notif-add-form .form-group label {
-    font-size: 0.7rem;
-    font-weight: 600;
+    font-size: 0.6875rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
 }
 
 .notif-add-form select,
 .notif-add-form input {
-    padding: 0.48rem 0.7rem;
+    height: 38px;
+    padding: 0 0.75rem;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-    background: var(--bg-card);
+    background: var(--bg-input);
     color: var(--text-primary);
-    font-size: 0.82rem;
-    min-width: 140px;
+    font-size: 0.8125rem;
+    font-family: inherit;
+    min-width: 170px;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .notif-add-form select:focus,
 .notif-add-form input:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-glow);
 }
 
 /* Channel cards */
 .notif-channels {
     display: flex;
     flex-direction: column;
-    gap: 0.65rem;
+    gap: 0.625rem;
 }
 
 .notif-channel-card {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.85rem 1rem;
-    background: var(--bg-card);
+    gap: 0.875rem;
+    padding: 0.875rem 1rem;
+    background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-md);
-    transition: border-color 0.2s;
+    border-radius: var(--radius-lg);
+    transition: border-color 140ms ease;
 }
 
-.notif-channel-card:hover {
-    border-color: var(--primary-color);
+@media (hover: hover) and (pointer: fine) {
+    .notif-channel-card:hover {
+        border-color: var(--border-hover);
+    }
 }
 
 .notif-channel-icon {
     width: 36px;
     height: 36px;
-    border-radius: 50%;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1rem;
     flex-shrink: 0;
 }
 
 .notif-channel-icon.email {
-    background: rgba(99,102,241,0.12);
-    color: #6366f1;
+    background: var(--primary-glow);
+    color: var(--primary-color);
 }
 
 .notif-channel-icon.whatsapp {
-    background: rgba(37,211,102,0.12);
-    color: #25d366;
+    background: var(--success-glow);
+    color: var(--success-color);
 }
 
 .notif-channel-info {
@@ -114,38 +121,38 @@
 
 .notif-channel-meta {
     font-size: 0.72rem;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    margin-top: 0.15rem;
+    gap: 0.5rem;
+    margin-top: 0.2rem;
 }
 
 .notif-verified-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.2rem;
-    padding: 0.1rem 0.4rem;
-    border-radius: 9999px;
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-sm);
     font-size: 0.65rem;
     font-weight: 700;
     text-transform: uppercase;
+    letter-spacing: 0.04em;
 }
 
 .notif-verified-badge.verified {
-    background: rgba(16,185,129,0.12);
-    color: #10b981;
+    background: var(--success-glow);
+    color: var(--success-color);
 }
 
 .notif-verified-badge.unverified {
-    background: rgba(245,158,11,0.12);
-    color: #f59e0b;
+    background: var(--warning-glow);
+    color: var(--warning-color);
 }
 
 .notif-channel-actions {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.5rem;
     flex-shrink: 0;
 }
 
@@ -155,15 +162,19 @@
     width: 36px;
     height: 20px;
     border-radius: 10px;
-    background: var(--border-color);
+    background: var(--border-hover);
     cursor: pointer;
-    transition: background 0.2s;
+    transition: background-color 160ms ease, transform 120ms var(--ease-out);
     border: none;
     padding: 0;
 }
 
+.notif-toggle:active {
+    transform: scale(0.95);
+}
+
 .notif-toggle.active {
-    background: #10b981;
+    background: var(--success-color);
 }
 
 .notif-toggle::after {
@@ -175,7 +186,8 @@
     height: 16px;
     border-radius: 50%;
     background: #fff;
-    transition: transform 0.2s;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    transition: transform 180ms var(--ease-out);
 }
 
 .notif-toggle.active::after {
@@ -187,42 +199,50 @@
     display: flex;
     gap: 0.4rem;
     align-items: center;
-    margin-top: 0.4rem;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
 }
 
 .notif-verify-inline input {
     width: 110px;
-    padding: 0.35rem 0.6rem;
-    font-size: 0.82rem;
-    letter-spacing: 0.15em;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.14em;
     text-align: center;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
-    background: var(--bg-card);
+    background: var(--bg-input);
     color: var(--text-primary);
 }
 
 .notif-empty {
     text-align: center;
-    padding: 1.5rem;
+    padding: 1.375rem;
     color: var(--text-muted);
-    font-size: 0.84rem;
+    font-size: 0.8125rem;
+    background: var(--bg-tertiary);
+    border: 1px dashed var(--border-hover);
+    border-radius: var(--radius-lg);
 }
 
 .notif-message {
-    font-size: 0.78rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-sm);
-    margin-bottom: 0.75rem;
-    animation: fadeIn 0.2s ease;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 0.625rem 0.875rem;
+    border-radius: var(--radius-md);
+    margin-bottom: 0.875rem;
+    animation: fadeIn 170ms var(--ease-out);
 }
 
 .notif-message.success {
-    background: rgba(16,185,129,0.1);
-    color: #10b981;
+    background: var(--success-glow);
+    color: var(--success-color);
+    border: 1px solid rgba(5, 150, 105, 0.25);
 }
 
 .notif-message.error {
-    background: rgba(239,68,68,0.1);
-    color: #ef4444;
+    background: var(--danger-glow);
+    color: var(--danger-color);
+    border: 1px solid rgba(220, 38, 38, 0.25);
 }

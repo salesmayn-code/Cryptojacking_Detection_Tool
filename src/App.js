@@ -20,14 +20,9 @@ const ProtectedRoute = ({ children }) => {
 
   if (loading) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary)'
-      }}>
-        <div className="spinner"></div>
+      <div className="app-boot-shell" role="status" aria-live="polite">
+        <div className="spinner" aria-hidden="true"></div>
+        <span>Verifying operator session...</span>
       </div>
     );
   }
@@ -41,14 +36,9 @@ const PublicRoute = ({ children }) => {
 
   if (loading) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary)'
-      }}>
-        <div className="spinner"></div>
+      <div className="app-boot-shell" role="status" aria-live="polite">
+        <div className="spinner" aria-hidden="true"></div>
+        <span>Initializing CryptoDetect...</span>
       </div>
     );
   }

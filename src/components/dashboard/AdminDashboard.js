@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { systemsAPI, alertsAPI } from '../../services/api';
@@ -11,7 +11,9 @@ const AdminDashboard = () => {
     const [systems, setSystems] = useState([]);
     const [alerts, setAlerts] = useState([]);
     const [stats, setStats] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const [initialLoading, setInitialLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
     const [lastUpdated, setLastUpdated] = useState(null);
     const [showAddSystem, setShowAddSystem] = useState(false);
@@ -21,33 +23,47 @@ const AdminDashboard = () => {
         owner_email: user?.email || '',
     });
 
-    useEffect(() => {
-        fetchData();
-    }, []);
-
-    const fetchData = async () => {
+    const fetchData = useCallback(async ({ manual = false } = {}) => {
+        if (manual) setRefreshing(true);
         try {
-            setLoading(true);
             setError('');
-            const systemsRes = await systemsAPI.getAll();
+            const [systemsRes, statsRes, alertsRes] = await Promise.all([
+                systemsAPI.getAll(),
+                alertsAPI.getStats(),
+                alertsAPI.getAll({ limit: 10 }),
+            ]);
+
             setSystems(systemsRes.data.systems || []);
-
-            const statsRes = await alertsAPI.getStats();
             setStats(statsRes.data);
-
-            const alertsRes = await alertsAPI.getAll({ limit: 10 });
             setAlerts(alertsRes.data.alerts || []);
             setLastUpdated(new Date());
-        } catch (error) {
-            console.error('Error fetching data:', error);
+        } catch (err) {
+            console.error('Error fetching data:', err);
             setError('Could not refresh admin dashboard data.');
         } finally {
-            setLoading(false);
+            setInitialLoading(false);
+            setRefreshing(false);
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        fetchData();
+        const interval = setInterval(() => fetchData(), 10000);
+        return () => clearInterval(interval);
+    }, [fetchData]);
+
+    useEffect(() => {
+        if (!showAddSystem) return undefined;
+        const onKeyDown = (e) => {
+            if (e.key === 'Escape' && !submitting) setShowAddSystem(false);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [showAddSystem, submitting]);
 
     const handleAddSystem = async (e) => {
         e.preventDefault();
+        setSubmitting(true);
         try {
             await systemsAPI.create(newSystem);
             setShowAddSystem(false);
@@ -56,9 +72,12 @@ const AdminDashboard = () => {
                 system_description: '',
                 owner_email: user?.email || '',
             });
-            fetchData();
-        } catch (error) {
-            console.error('Error adding system:', error);
+            await fetchData();
+        } catch (err) {
+            console.error('Error adding system:', err);
+            setError(err.response?.data?.detail || 'Failed to register endpoint.');
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -66,11 +85,23 @@ const AdminDashboard = () => {
         navigate(`/system/${system.system_id}`);
     };
 
-    if (loading) {
+    if (initialLoading) {
         return (
-            <div className="dashboard-container">
-                <div className="flex-center" style={{ minHeight: '400px' }}>
-                    <div className="spinner"></div>
+            <div className="dashboard-container" aria-busy="true" aria-label="Loading fleet operations">
+                <div className="skeleton-card" style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '240px' }}>
+                        <div className="skeleton skeleton-line tall" />
+                        <div className="skeleton skeleton-line short" />
+                    </div>
+                    <div className="skeleton" style={{ width: '260px', height: '36px', borderRadius: '8px' }} />
+                </div>
+                <div className="dashboard-stats">
+                    {[1, 2, 3, 4].map((idx) => (
+                        <div key={idx} className="skeleton-card">
+                            <div className="skeleton skeleton-line short" />
+                            <div className="skeleton skeleton-line tall" />
+                        </div>
+                    ))}
                 </div>
             </div>
         );
@@ -78,87 +109,129 @@ const AdminDashboard = () => {
 
     return (
         <div className="dashboard-container fade-in">
-            {/* Stats Overview */}
-            <div className="dashboard-stats">
-                <div className="stat-card">
-                    <div className="stat-icon stat-icon-blue">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
-                        </svg>
+            <section className="command-bar">
+                <div className="command-bar-identity">
+                    <div className="command-bar-title-row">
+                        <h1 className="command-bar-title">Fleet Security Operations</h1>
+                        <span className="badge badge-success">{systems.length} Endpoints</span>
                     </div>
-                    <div className="stat-content">
-                        <div className="stat-value">{systems.length}</div>
-                        <div className="stat-label">Total Systems</div>
+                    {lastUpdated && (
+                        <div className="command-bar-meta">
+                            <span className="command-bar-meta-item">Last synced {lastUpdated.toLocaleTimeString()}</span>
+                        </div>
+                    )}
+                </div>
+
+                <div className="command-bar-actions">
+                    <button type="button" onClick={() => setShowAddSystem(true)} className="btn btn-primary">
+                        Register Endpoint
+                    </button>
+                    <button type="button" onClick={() => navigate('/alerts')} className="btn btn-secondary">
+                        Security Alerts
+                    </button>
+                    <button type="button" onClick={() => navigate('/reports')} className="btn btn-secondary">
+                        Reports
+                    </button>
+                    <button type="button" onClick={() => navigate('/admin/audit-logs')} className="btn btn-secondary">
+                        Audit Trail
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => fetchData({ manual: true })}
+                        className="btn btn-secondary"
+                        disabled={refreshing}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className={refreshing ? 'spin-inline' : ''}
+                            aria-hidden="true"
+                        >
+                            <polyline points="23 4 23 10 17 10" />
+                            <polyline points="1 20 1 14 7 14" />
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                        </svg>
+                        <span>Refresh</span>
+                    </button>
+                </div>
+            </section>
+
+            {error && <div className="alert alert-danger" role="alert">{error}</div>}
+
+            <section className="dashboard-stats stagger-enter">
+                <div className="stat-card">
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-blue" aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Registered Endpoints</div>
+                            <div className="stat-value tabular-nums">{systems.length}</div>
+                        </div>
                     </div>
                 </div>
 
-                <div className="stat-card">
-                    <div className="stat-icon stat-icon-purple">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                        </svg>
-                    </div>
-                    <div className="stat-content">
-                        <div className="stat-value">{stats?.total_alerts || 0}</div>
-                        <div className="stat-label">Total Alerts</div>
-                    </div>
-                </div>
-
-                <div className="stat-card">
-                    <div className="stat-icon stat-icon-danger">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-                        </svg>
-                    </div>
-                    <div className="stat-content">
-                        <div className="stat-value">{stats?.unread_alerts || 0}</div>
-                        <div className="stat-label">Unread Alerts</div>
+                <div className="stat-card clickable" role="button" tabIndex={0} onClick={() => navigate('/alerts')} onKeyDown={(e) => e.key === 'Enter' && navigate('/alerts')}>
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-cyan" aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Total Incidents</div>
+                            <div className="stat-value tabular-nums">{stats?.total_alerts || 0}</div>
+                        </div>
                     </div>
                 </div>
 
-                <div className="stat-card">
-                    <div className="stat-icon stat-icon-green">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-                        </svg>
-                    </div>
-                    <div className="stat-content">
-                        <div className="stat-value">{stats?.acknowledged_alerts || 0}</div>
-                        <div className="stat-label">Acknowledged</div>
+                <div className="stat-card clickable" role="button" tabIndex={0} onClick={() => navigate('/alerts')} onKeyDown={(e) => e.key === 'Enter' && navigate('/alerts')}>
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-danger" aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Unread Alerts</div>
+                            <div className="stat-value danger tabular-nums">{stats?.unread_alerts || 0}</div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            {/* Action Buttons */}
-            <div className="dashboard-actions">
-                <button onClick={() => setShowAddSystem(true)} className="btn btn-primary">
-                    Add New System
-                </button>
-                <button onClick={() => navigate('/alerts')} className="btn btn-secondary">
-                    View Alerts
-                </button>
-                <button onClick={() => navigate('/reports')} className="btn btn-secondary">
-                    Reports
-                </button>
-                <button onClick={() => navigate('/admin/audit-logs')} className="btn btn-secondary">
-                    Audit Logs
-                </button>
-                <button onClick={fetchData} className="btn btn-secondary">
-                    Refresh
-                </button>
-            </div>
+                <div className="stat-card clickable" role="button" tabIndex={0} onClick={() => navigate('/alerts')} onKeyDown={(e) => e.key === 'Enter' && navigate('/alerts')}>
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-green" aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Acknowledged</div>
+                            <div className="stat-value success tabular-nums">{stats?.acknowledged_alerts || 0}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-            {error && <div className="alert alert-danger">{error}</div>}
-            {lastUpdated && <p className="text-muted">Last updated: {lastUpdated.toLocaleTimeString()}</p>}
-
-            {/* Add System Modal */}
             {showAddSystem && (
-                <div className="modal-overlay" onClick={() => setShowAddSystem(false)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-overlay" onClick={() => !submitting && setShowAddSystem(false)}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="add-system-title">
                         <div className="modal-header">
-                            <h2>Add New System</h2>
-                            <button onClick={() => setShowAddSystem(false)} className="modal-close">
-                                X
+                            <h2 id="add-system-title">Register Monitored Endpoint</h2>
+                            <button type="button" onClick={() => setShowAddSystem(false)} className="modal-close" disabled={submitting} aria-label="Close modal">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
                             </button>
                         </div>
                         <form onSubmit={handleAddSystem}>
@@ -170,7 +243,7 @@ const AdminDashboard = () => {
                                     value={newSystem.system_name}
                                     onChange={(e) => setNewSystem({ ...newSystem, system_name: e.target.value })}
                                     required
-                                    placeholder="Lab Computer 01"
+                                    placeholder="Lab Workstation 01"
                                 />
                             </div>
                             <div className="form-group">
@@ -179,7 +252,7 @@ const AdminDashboard = () => {
                                     className="form-input"
                                     value={newSystem.system_description}
                                     onChange={(e) => setNewSystem({ ...newSystem, system_description: e.target.value })}
-                                    placeholder="Optional description"
+                                    placeholder="Department or hardware notes"
                                     rows="3"
                                 />
                             </div>
@@ -194,11 +267,11 @@ const AdminDashboard = () => {
                                 />
                             </div>
                             <div className="modal-actions">
-                                <button type="button" onClick={() => setShowAddSystem(false)} className="btn btn-secondary">
+                                <button type="button" onClick={() => setShowAddSystem(false)} className="btn btn-secondary" disabled={submitting}>
                                     Cancel
                                 </button>
-                                <button type="submit" className="btn btn-primary">
-                                    Add System
+                                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                    {submitting ? 'Registering...' : 'Register System'}
                                 </button>
                             </div>
                         </form>
@@ -206,12 +279,11 @@ const AdminDashboard = () => {
                 </div>
             )}
 
-            {/* Systems Grid */}
             <div className="dashboard-section">
-                <h2 className="section-title">Monitored Systems</h2>
+                <h2 className="section-title">Monitored Endpoints ({systems.length})</h2>
                 {systems.length === 0 ? (
                     <div className="empty-state">
-                        <p>No systems registered yet. Add your first system to start monitoring.</p>
+                        <p>No systems registered yet. Click &ldquo;Register Endpoint&rdquo; to add one.</p>
                     </div>
                 ) : (
                     <div className="systems-grid">
@@ -226,32 +298,41 @@ const AdminDashboard = () => {
                 )}
             </div>
 
-            {/* Recent Alerts */}
             <div className="dashboard-section">
                 <div className="section-header">
-                    <h2 className="section-title">Recent Alerts</h2>
-                    <button onClick={() => navigate('/alerts')} className="btn btn-secondary btn-sm">
+                    <h2 className="section-title">Recent Fleet Alerts</h2>
+                    <button type="button" onClick={() => navigate('/alerts')} className="btn btn-secondary btn-sm">
                         View All
                     </button>
                 </div>
                 {alerts.length === 0 ? (
                     <div className="empty-state">
-                        <p>No alerts yet. System is monitoring for cryptojacking activity.</p>
+                        <p>No alerts across monitored endpoints.</p>
                     </div>
                 ) : (
                     <div className="alerts-list">
-                        {alerts.slice(0, 5).map((alert) => (
-                            <div key={alert.alert_id} className="alert-item">
-                                <div className="alert-icon">
-                                    {alert.alert_type === 'cryptojacking_detected' ? 'CRIT' : 'INFO'}
+                        {alerts.map((alert) => (
+                            <div
+                                key={alert.alert_id}
+                                className={`alert-item ${alert.status === 'unread' ? 'unread' : ''}`}
+                                onClick={() => navigate('/alerts')}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => e.key === 'Enter' && navigate('/alerts')}
+                            >
+                                <div className="alert-icon" aria-hidden="true">
+                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                                        <line x1="12" y1="9" x2="12" y2="13" />
+                                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                                    </svg>
                                 </div>
                                 <div className="alert-content">
                                     <div className="alert-title">
-                                        Cryptojacking Detected - {alert.system_id}
+                                        {alert.alert_type.replace(/_/g, ' ')} — <code>{alert.system_id}</code>
                                     </div>
-                                    <div className="alert-meta">
-                                        {new Date(alert.timestamp).toLocaleString()} |
-                                        Confidence: {(alert.confidence * 100).toFixed(1)}%
+                                    <div className="alert-meta tabular-nums">
+                                        {new Date(alert.timestamp).toLocaleString()} · Confidence {(alert.confidence * 100).toFixed(1)}%
                                     </div>
                                 </div>
                                 <span className={`badge badge-${alert.status === 'unread' ? 'danger' : 'success'}`}>

@@ -1,38 +1,46 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 import { alertsAPI } from '../../services/api';
+import TelemetryTooltip from '../common/TelemetryTooltip';
 import './Alerts.css';
 
 const AlertsPage = () => {
     const [alerts, setAlerts] = useState([]);
     const [filteredAlerts, setFilteredAlerts] = useState([]);
     const [stats, setStats] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const [initialLoading, setInitialLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [filter, setFilter] = useState('all');
     const [searchTerm, setSearchTerm] = useState('');
     const [toast, setToast] = useState(null);
     const [expandedAlertId, setExpandedAlertId] = useState(null);
+    const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+    const [whitelistModal, setWhitelistModal] = useState(null);
 
     const prevUnreadCountRef = useRef(0);
+    const hasAnimatedPieRef = useRef(false);
 
     useEffect(() => {
         fetchAlerts();
-        const interval = setInterval(fetchAlerts, 10000);
+        const interval = setInterval(() => fetchAlerts(), 10000);
         return () => clearInterval(interval);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
         applyFilters();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [alerts, filter, searchTerm]);
 
     useEffect(() => {
-        if (!toast) return;
-        const timer = setTimeout(() => setToast(null), 5000);
+        if (!toast) return undefined;
+        const timer = setTimeout(() => setToast(null), 4200);
         return () => clearTimeout(timer);
     }, [toast]);
 
-    const fetchAlerts = async () => {
+    const fetchAlerts = async ({ manual = false } = {}) => {
+        if (manual) setRefreshing(true);
         try {
             const [alertsRes, statsRes] = await Promise.all([
                 alertsAPI.getAll({ limit: 100 }),
@@ -41,14 +49,14 @@ const AlertsPage = () => {
 
             const nextAlerts = alertsRes.data.alerts || [];
             const unreadCount = nextAlerts.filter((a) => a.status === 'unread').length;
-            if (unreadCount > prevUnreadCountRef.current && nextAlerts.length > 0) {
+            if (!initialLoading && unreadCount > prevUnreadCountRef.current && nextAlerts.length > 0) {
                 const latestUnread = nextAlerts.find((a) => a.status === 'unread');
                 if (latestUnread) {
                     const reasons = buildReasonChips(latestUnread).slice(0, 2).join(', ');
                     const confidencePct = (latestUnread.confidence * 100).toFixed(1);
                     setToast({
-                        title: 'New security alert',
-                        message: `${latestUnread.system_id} | ${confidencePct}% | ${reasons}`,
+                        title: 'New security incident detected',
+                        message: `${latestUnread.system_id} · ${confidencePct}% · ${reasons}`,
                     });
                 }
             }
@@ -56,10 +64,16 @@ const AlertsPage = () => {
 
             setAlerts(nextAlerts);
             setStats(statsRes.data);
+            if (!hasAnimatedPieRef.current) {
+                setTimeout(() => {
+                    hasAnimatedPieRef.current = true;
+                }, 280);
+            }
         } catch (error) {
             console.error('Error fetching alerts:', error);
         } finally {
-            setLoading(false);
+            setInitialLoading(false);
+            setRefreshing(false);
         }
     };
 
@@ -70,11 +84,13 @@ const AlertsPage = () => {
             filtered = filtered.filter((alert) => alert.status === filter);
         }
 
-        if (searchTerm) {
+        if (searchTerm.trim()) {
+            const term = searchTerm.toLowerCase().trim();
             filtered = filtered.filter(
                 (alert) =>
-                    alert.system_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    alert.alert_type.toLowerCase().includes(searchTerm.toLowerCase())
+                    alert.system_id.toLowerCase().includes(term) ||
+                    alert.alert_type.toLowerCase().includes(term) ||
+                    (alert.suspicious_processes || []).some((p) => p.toLowerCase().includes(term))
             );
         }
 
@@ -82,54 +98,106 @@ const AlertsPage = () => {
     };
 
     const handleUpdateStatus = async (alertId, newStatus) => {
+        // Optimistic immediate UI update for sub-16ms feedback
+        const prevAlerts = alerts;
+        const prevStats = stats;
+
+        setAlerts((curr) =>
+            curr.map((a) => (a.alert_id === alertId ? { ...a, status: newStatus } : a))
+        );
+        if (stats && newStatus === 'acknowledged') {
+            setStats({
+                ...stats,
+                unread_alerts: Math.max(0, (stats.unread_alerts || 0) - 1),
+                acknowledged_alerts: (stats.acknowledged_alerts || 0) + 1,
+            });
+        }
+
         try {
             await alertsAPI.update(alertId, { status: newStatus });
             fetchAlerts();
         } catch (error) {
             console.error('Error updating alert:', error);
+            setAlerts(prevAlerts);
+            setStats(prevStats);
+            setToast({
+                title: 'Status update failed',
+                message: 'Could not acknowledge incident. Please retry.',
+            });
         }
     };
 
-    const handleWhitelist = async (alert) => {
-        const context = alert.metrics?.process_context || [];
-        const candidates = context.map((item) => item?.name).filter(Boolean);
-        let processName = candidates[0] || alert.suspicious_processes?.[0] || '';
-
-        if (candidates.length > 1) {
-            const choice = window.prompt(
-                `Whitelist which process?\n${candidates.join(', ')}`,
-                processName
-            );
-            if (!choice) {
-                return;
-            }
-            processName = choice.trim();
-        }
-
+    const executeWhitelist = async (alertId, processName) => {
         if (!processName) {
             setToast({
-                title: 'Whitelist failed',
-                message: 'No process name available to whitelist.',
+                title: 'Allowlist failed',
+                message: 'No process name available to allowlist.',
             });
             return;
         }
 
         try {
-            await alertsAPI.whitelist(alert.alert_id, {
+            await alertsAPI.whitelist(alertId, {
                 process_name: processName,
                 scope: 'path_signature',
             });
+            setWhitelistModal(null);
             setToast({
-                title: 'Whitelisted',
-                message: `${processName} was added to allowlist rules.`,
+                title: 'Process allowlisted',
+                message: `${processName} was added to endpoint allowlist rules.`,
             });
             fetchAlerts();
         } catch (error) {
             console.error('Error whitelisting process:', error);
             setToast({
-                title: 'Whitelist failed',
-                message: 'Unable to add allowlist rule. Check alert details.',
+                title: 'Allowlist failed',
+                message: 'Unable to add allowlist rule. Check process metadata.',
             });
+        }
+    };
+
+    const handleWhitelistClick = (alert) => {
+        const context = alert.metrics?.process_context || [];
+        const candidates = Array.from(
+            new Set([
+                ...context.map((item) => item?.name).filter(Boolean),
+                ...(alert.suspicious_processes || []).filter(Boolean),
+            ])
+        );
+
+        if (candidates.length === 0) {
+            setToast({
+                title: 'Allowlist unavailable',
+                message: 'No flagged executable was attached to this incident.',
+            });
+            return;
+        }
+
+        if (candidates.length === 1) {
+            executeWhitelist(alert.alert_id, candidates[0]);
+            return;
+        }
+
+        setWhitelistModal({
+            alertId: alert.alert_id,
+            candidates,
+            selected: candidates[0],
+        });
+    };
+
+    const handleDeleteAlert = async (alertId) => {
+        const prevAlerts = alerts;
+        setConfirmDeleteId(null);
+        setAlerts((curr) => curr.filter((a) => a.alert_id !== alertId));
+
+        try {
+            await alertsAPI.remove(alertId);
+            setToast({ title: 'Incident removed', message: `Alert #${alertId} deleted.` });
+            fetchAlerts();
+        } catch (error) {
+            console.error('Error deleting alert:', error);
+            setAlerts(prevAlerts);
+            setToast({ title: 'Delete failed', message: 'Unable to delete this alert.' });
         }
     };
 
@@ -188,7 +256,7 @@ const AlertsPage = () => {
                 .slice(0, 4);
             fallback.push({
                 label: 'Mining pool traffic',
-                detail: `${ports.length ? `Ports: ${ports.join(', ')}` : ''}${ports.length && names.length ? ' | ' : ''}${names.length ? `Processes: ${names.join(', ')}` : ''}`,
+                detail: `${ports.length ? `Ports: ${ports.join(', ')}` : ''}${ports.length && names.length ? ' · ' : ''}${names.length ? `Processes: ${names.join(', ')}` : ''}`,
             });
         }
 
@@ -206,171 +274,267 @@ const AlertsPage = () => {
         return Number.isFinite(num) ? num : null;
     };
 
-    const handleDeleteAlert = async (alertId) => {
-        const confirmed = window.confirm('Remove this alert? This cannot be undone.');
-        if (!confirmed) return;
-
-        try {
-            await alertsAPI.remove(alertId);
-            setToast({ title: 'Alert removed', message: `Alert ${alertId} deleted.` });
-            fetchAlerts();
-        } catch (error) {
-            console.error('Error deleting alert:', error);
-            setToast({ title: 'Delete failed', message: 'Unable to delete this alert.' });
-        }
-    };
-
-    if (loading) {
+    if (initialLoading) {
         return (
-            <div className="alerts-page">
-                <div className="flex-center" style={{ minHeight: '400px' }}>
-                    <div className="spinner"></div>
+            <div className="alerts-page" aria-busy="true" aria-label="Loading security incidents">
+                <div className="alerts-stats">
+                    {[1, 2, 3, 4].map((idx) => (
+                        <div key={idx} className="skeleton-card">
+                            <div className="skeleton skeleton-line short" />
+                            <div className="skeleton skeleton-line tall" />
+                        </div>
+                    ))}
+                </div>
+                <div className="skeleton-card">
+                    <div className="skeleton skeleton-line medium" />
+                    <div className="skeleton" style={{ height: '220px', width: '100%', borderRadius: '8px' }} />
                 </div>
             </div>
         );
     }
 
     const pieData = [
-        { name: 'Unread', value: stats?.unread_alerts || 0, color: '#ef4444' },
-        { name: 'Acknowledged', value: stats?.acknowledged_alerts || 0, color: '#10b981' },
+        { name: 'Unread', value: stats?.unread_alerts || 0, color: 'var(--danger-color)' },
+        { name: 'Acknowledged', value: stats?.acknowledged_alerts || 0, color: 'var(--success-color)' },
     ];
-
-    const tooltipStyle = {
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-color)',
-        borderRadius: '10px',
-        color: 'var(--text-primary)',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        fontSize: '0.8125rem',
-    };
 
     return (
         <div className="alerts-page fade-in">
             {toast && (
-                <div className="toast">
+                <div className="toast" role="status" aria-live="polite">
                     <strong>{toast.title}</strong>
                     <span>{toast.message}</span>
                 </div>
             )}
 
-            <div className="alerts-stats">
-                <div className="stat-card alert-stat">
-                    <div className="stat-icon stat-icon-purple">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                        </svg>
+            {whitelistModal && (
+                <div className="modal-overlay" onClick={() => setWhitelistModal(null)}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="allowlist-modal-title">
+                        <div className="modal-header">
+                            <h2 id="allowlist-modal-title">Allowlist Process Signature</h2>
+                            <button type="button" className="modal-close" onClick={() => setWhitelistModal(null)} aria-label="Close modal">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                            </button>
+                        </div>
+                        <p className="text-muted" style={{ fontSize: '0.8125rem', marginBottom: '1rem' }}>
+                            Select the executable to add to the path &amp; Authenticode allowlist for future evaluations:
+                        </p>
+                        <div className="form-group">
+                            <label className="form-label">Executable Name</label>
+                            <select
+                                className="form-input"
+                                value={whitelistModal.selected}
+                                onChange={(e) => setWhitelistModal({ ...whitelistModal, selected: e.target.value })}
+                            >
+                                {whitelistModal.candidates.map((proc) => (
+                                    <option key={proc} value={proc}>{proc}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="modal-actions">
+                            <button type="button" className="btn btn-secondary" onClick={() => setWhitelistModal(null)}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => executeWhitelist(whitelistModal.alertId, whitelistModal.selected)}
+                            >
+                                Add to Allowlist
+                            </button>
+                        </div>
                     </div>
-                    <div className="stat-content">
-                        <div className="stat-value">{stats?.total_alerts || 0}</div>
-                        <div className="stat-label">Total Alerts</div>
+                </div>
+            )}
+
+            <div className="alerts-stats stagger-enter">
+                <div className="stat-card">
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-blue">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Total Incidents</div>
+                            <div className="stat-value tabular-nums">{stats?.total_alerts || 0}</div>
+                        </div>
                     </div>
                 </div>
 
-                <div className="stat-card alert-stat">
-                    <div className="stat-icon stat-icon-danger">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-                        </svg>
-                    </div>
-                    <div className="stat-content">
-                        <div className="stat-value danger">{stats?.unread_alerts || 0}</div>
-                        <div className="stat-label">Unread</div>
+                <div className="stat-card">
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-danger">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Unread Triage</div>
+                            <div className="stat-value danger tabular-nums">{stats?.unread_alerts || 0}</div>
+                        </div>
                     </div>
                 </div>
 
-                <div className="stat-card alert-stat">
-                    <div className="stat-icon stat-icon-green">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-                        </svg>
-                    </div>
-                    <div className="stat-content">
-                        <div className="stat-value success">{stats?.acknowledged_alerts || 0}</div>
-                        <div className="stat-label">Acknowledged</div>
+                <div className="stat-card">
+                    <div className="stat-card-top">
+                        <div className="stat-icon stat-icon-green">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+                            </svg>
+                        </div>
+                        <div className="stat-content">
+                            <div className="stat-label">Acknowledged</div>
+                            <div className="stat-value success tabular-nums">{stats?.acknowledged_alerts || 0}</div>
+                        </div>
                     </div>
                 </div>
 
                 <div className="stat-card chart-stat">
-                    <h3 className="chart-title">Alert Distribution</h3>
+                    <div className="chart-stat-header">
+                        <span className="stat-label" style={{ marginBottom: 0 }}>Triage Breakdown</span>
+                    </div>
                     {pieData.some((d) => d.value > 0) ? (
                         <div className="alert-distribution">
                             <div className="alert-distribution-chart">
-                                <ResponsiveContainer width="100%" height={150}>
+                                <ResponsiveContainer width="100%" height={84}>
                                     <PieChart>
                                         <Pie
                                             data={pieData}
                                             cx="50%"
                                             cy="50%"
-                                            innerRadius={40}
-                                            outerRadius={60}
-                                            paddingAngle={5}
+                                            innerRadius={24}
+                                            outerRadius={38}
+                                            paddingAngle={3}
                                             dataKey="value"
+                                            stroke="none"
+                                            isAnimationActive={!hasAnimatedPieRef.current}
+                                            animationDuration={240}
                                         >
                                             {pieData.map((entry, index) => (
                                                 <Cell key={`cell-${index}`} fill={entry.color} />
                                             ))}
                                         </Pie>
-                                        <Tooltip contentStyle={tooltipStyle} />
+                                        <Tooltip content={<TelemetryTooltip />} />
                                     </PieChart>
                                 </ResponsiveContainer>
                             </div>
-                            <div className="alert-legend">
+                            <div className="alert-legend tabular-nums">
                                 {pieData.map((entry) => (
                                     <div key={entry.name} className="alert-legend-item">
                                         <span className="alert-legend-dot" style={{ background: entry.color }}></span>
                                         <span>{entry.name}</span>
+                                        <strong>{entry.value}</strong>
                                     </div>
                                 ))}
                             </div>
                         </div>
                     ) : (
-                        <div className="no-data">No alerts yet</div>
+                        <div className="no-data">No incidents recorded</div>
                     )}
                 </div>
             </div>
 
             <div className="alerts-controls">
-                <div className="filter-buttons">
+                <div className="segmented-control" role="tablist" aria-label="Filter incidents by status">
                     <button
-                        className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
+                        type="button"
+                        className={`segmented-btn ${filter === 'all' ? 'active' : ''}`}
                         onClick={() => setFilter('all')}
                     >
                         All ({alerts.length})
                     </button>
                     <button
-                        className={`filter-btn ${filter === 'unread' ? 'active' : ''}`}
+                        type="button"
+                        className={`segmented-btn ${filter === 'unread' ? 'active' : ''}`}
                         onClick={() => setFilter('unread')}
                     >
                         Unread ({alerts.filter((a) => a.status === 'unread').length})
                     </button>
                     <button
-                        className={`filter-btn ${filter === 'acknowledged' ? 'active' : ''}`}
+                        type="button"
+                        className={`segmented-btn ${filter === 'acknowledged' ? 'active' : ''}`}
                         onClick={() => setFilter('acknowledged')}
                     >
                         Acknowledged ({alerts.filter((a) => a.status === 'acknowledged').length})
                     </button>
                 </div>
 
-                <div className="search-box">
-                    <input
-                        type="text"
-                        placeholder="Search by system ID or alert type"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="form-input search-input"
-                    />
+                <div className="alerts-controls-right">
+                    <div className="search-box">
+                        <svg className="search-box-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <input
+                            type="text"
+                            placeholder="Filter by endpoint, type, or process..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="form-input search-input"
+                        />
+                        {searchTerm && (
+                            <button
+                                type="button"
+                                className="search-clear-btn"
+                                onClick={() => setSearchTerm('')}
+                                aria-label="Clear search"
+                            >
+                                ×
+                            </button>
+                        )}
+                    </div>
+
+                    <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => fetchAlerts({ manual: true })}
+                        disabled={refreshing}
+                    >
+                        <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className={refreshing ? 'spin-inline' : ''}
+                            aria-hidden="true"
+                        >
+                            <polyline points="23 4 23 10 17 10" />
+                            <polyline points="1 20 1 14 7 14" />
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                        </svg>
+                        <span>Sync</span>
+                    </button>
                 </div>
             </div>
 
             <div className="alerts-section">
                 {filteredAlerts.length === 0 ? (
                     <div className="empty-state">
-                        <p>
+                        <div className="empty-icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                                <polyline points="8.5 12.5 10.8 14.8 15.5 9.8" />
+                            </svg>
+                        </div>
+                        <p className="empty-title">
                             {searchTerm
-                                ? 'No alerts matching your search criteria.'
+                                ? 'No Matching Security Incidents'
                                 : filter === 'all'
-                                    ? 'No alerts yet. Monitoring is active.'
-                                    : `No ${filter} alerts.`}
+                                    ? 'Zero Active Security Alerts'
+                                    : `No ${filter} incidents`}
+                        </p>
+                        <p className="empty-subtitle">
+                            {searchTerm
+                                ? 'Try clearing the filter query or switching status tabs.'
+                                : 'All monitored endpoints are operating within baseline behavioral and signature thresholds.'}
                         </p>
                     </div>
                 ) : (
@@ -378,222 +542,316 @@ const AlertsPage = () => {
                         <table className="table alerts-table">
                             <thead>
                                 <tr>
-                                    <th>Level</th>
-                                    <th>System</th>
+                                    <th>Severity</th>
+                                    <th>Endpoint</th>
                                     <th>Timestamp</th>
                                     <th>Confidence</th>
-                                    <th>Suspicious Processes</th>
-                                    <th>Metrics</th>
+                                    <th>Flagged Processes</th>
+                                    <th>Telemetry Snapshot</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {filteredAlerts.map((alert) => (
-                                    <React.Fragment key={alert.alert_id}>
-                                    <tr className={`alert-row ${alert.status} ${expandedAlertId === alert.alert_id ? 'expanded' : ''}`}
-                                        onClick={() => setExpandedAlertId(expandedAlertId === alert.alert_id ? null : alert.alert_id)}
-                                        style={{ cursor: 'pointer' }}
-                                    >
-                                        <td>
-                                            <div className="alert-type-cell">
-                                                <span className={`alert-level-badge level-${getAlertLabel(alert.alert_type).toLowerCase()}`}>
-                                                    {getAlertLabel(alert.alert_type)}
-                                                </span>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <code className="system-id-code">{alert.system_id}</code>
-                                        </td>
-                                        <td className="timestamp-cell">{new Date(alert.timestamp).toLocaleString()}</td>
-                                        <td>
-                                            <div className={`confidence-badge ${getConfidenceColor(alert.confidence)}`}>
-                                                {(alert.confidence * 100).toFixed(1)}%
-                                            </div>
-                                        </td>
-                                        <td className="processes-cell">
-                                            {alert.suspicious_processes?.length ? (
-                                                <div className="processes-list">
-                                                    {alert.suspicious_processes.slice(0, 3).map((proc, index) => (
-                                                        <span key={index} className="process-badge">{proc}</span>
-                                                    ))}
-                                                    {alert.suspicious_processes.length > 3 && (
-                                                        <span className="more-badge">+{alert.suspicious_processes.length - 3}</span>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <span className="text-muted">none</span>
-                                            )}
-                                        </td>
-                                        <td className="metrics-cell">
-                                            {alert.metrics ? (
-                                                <div className="metrics-grid">
-                                                    <div className="metric-item">
-                                                        <span className="metric-label">CPU</span>
-                                                        <span className="metric-value">
-                                                            {(normalizeNumber(alert.metrics.cpu_usage) ?? 0).toFixed(1)}%
-                                                        </span>
-                                                    </div>
-                                                    <div className="metric-item">
-                                                        <span className="metric-label">Memory</span>
-                                                        <span className="metric-value">
-                                                            {(normalizeNumber(alert.metrics.memory_usage) ?? 0).toFixed(1)}%
-                                                        </span>
-                                                    </div>
-                                                    <div className="metric-item">
-                                                        <span className="metric-label">GPU</span>
-                                                        <span className="metric-value">
-                                                            {normalizeNumber(alert.metrics.gpu_utilization) !== null
-                                                                ? `${normalizeNumber(alert.metrics.gpu_utilization).toFixed(1)}%`
-                                                                : 'N/A'}
-                                                        </span>
-                                                    </div>
-                                                    <div className="metric-item">
-                                                        <span className="metric-label">VRAM</span>
-                                                        <span className="metric-value">
-                                                            {normalizeNumber(alert.metrics.gpu_memory_used_mb) !== null && normalizeNumber(alert.metrics.gpu_memory_total_mb) !== null
-                                                                ? `${normalizeNumber(alert.metrics.gpu_memory_used_mb).toFixed(0)} / ${normalizeNumber(alert.metrics.gpu_memory_total_mb).toFixed(0)} MB`
-                                                                : 'N/A'}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <span className="text-muted">none</span>
-                                            )}
-                                        </td>
-                                        <td>
-                                            <span className={`badge badge-${alert.status === 'unread' ? 'danger' : 'success'}`}>
-                                                {alert.status}
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <div className="alert-actions">
-                                                {alert.status === 'unread' ? (
-                                                    <>
-                                                        <button
-                                                            className="btn btn-sm btn-success"
-                                                            onClick={(e) => { e.stopPropagation(); handleUpdateStatus(alert.alert_id, 'acknowledged'); }}
-                                                        >
-                                                            Acknowledge
-                                                        </button>
-                                                        <button
-                                                            className="btn btn-sm btn-secondary"
-                                                            onClick={(e) => { e.stopPropagation(); handleWhitelist(alert); }}
-                                                        >
-                                                            Whitelist
-                                                        </button>
-                                                        <button
-                                                            className="btn btn-sm btn-danger"
-                                                            onClick={(e) => { e.stopPropagation(); handleDeleteAlert(alert.alert_id); }}
-                                                        >
-                                                            Remove
-                                                        </button>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <button className="btn btn-sm btn-secondary" disabled>
-                                                            Reviewed
-                                                        </button>
-                                                        <button
-                                                            className="btn btn-sm btn-danger"
-                                                            onClick={(e) => { e.stopPropagation(); handleDeleteAlert(alert.alert_id); }}
-                                                        >
-                                                            Remove
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    {expandedAlertId === alert.alert_id && (
-                                        <tr className="shap-expansion-row">
-                                            <td colSpan="8">
-                                                <div className="shap-panel">
-                                                    <div className="reason-panel">
-                                                        <div className="reason-header">Detection reasons</div>
-                                                        <div className="reason-chips">
-                                                            {buildReasonChips(alert).map((reason, idx) => (
-                                                                <span key={idx} className="reason-chip">{reason}</span>
-                                                            ))}
-                                                        </div>
-                                                        {buildReasonDetails(alert).length > 0 && (
-                                                            <div className="reason-details">
-                                                                {buildReasonDetails(alert).map((item, idx) => (
-                                                                    <div key={idx} className="reason-detail-row">
-                                                                        <span className="reason-detail-label">{item.label}</span>
-                                                                        <span className="reason-detail-text">{item.detail}</span>
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                        {Array.isArray(alert.metrics?.process_context) && alert.metrics.process_context.length > 0 && (
-                                                            <div className="reason-context">
-                                                                <div className="reason-context-title">Process context</div>
-                                                                <table>
-                                                                    <thead>
-                                                                        <tr>
-                                                                            <th>Process</th>
-                                                                            <th>Path</th>
-                                                                            <th>Signature</th>
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody>
-                                                                        {alert.metrics.process_context.slice(0, 4).map((proc, i) => (
-                                                                            <tr key={i}>
-                                                                                <td>{proc?.name || 'unknown'}</td>
-                                                                                <td className="reason-path">{proc?.exe_path || 'N/A'}</td>
-                                                                                <td className="reason-signature">{proc?.signature_status || 'unknown'}</td>
-                                                                            </tr>
-                                                                        ))}
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <h4 className="shap-title">
-                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                            <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
-                                                        </svg>
-                                                        Why was this flagged?
-                                                    </h4>
-                                                    {alert.feature_importance && Object.keys(alert.feature_importance).length > 0 ? (() => {
-                                                        const shapData = Object.entries(alert.feature_importance)
-                                                            .map(([name, data]) => ({
-                                                                name: name.replace(/_/g, ' '),
-                                                                shap: data.shap,
-                                                                value: data.value,
-                                                                fill: data.shap >= 0 ? '#ef4444' : '#3b82f6',
-                                                            }))
-                                                            .sort((a, b) => Math.abs(b.shap) - Math.abs(a.shap))
-                                                            .slice(0, 8);
+                                {filteredAlerts.map((alert) => {
+                                    const isExpanded = expandedAlertId === alert.alert_id;
+                                    const isConfirmingDelete = confirmDeleteId === alert.alert_id;
 
-                                                        return (
-                                                            <div className="shap-content">
-                                                                <div className="shap-values-table">
-                                                                    <table>
-                                                                        <thead><tr><th>Feature</th><th>Value</th><th>SHAP Impact</th></tr></thead>
-                                                                        <tbody>
-                                                                            {shapData.map((f, i) => (
-                                                                                <tr key={i}>
-                                                                                    <td>{f.name}</td>
-                                                                                    <td>{f.value}</td>
-                                                                                    <td style={{ color: f.shap >= 0 ? '#ef4444' : '#3b82f6', fontWeight: 600 }}>{f.shap > 0 ? '+' : ''}{f.shap.toFixed(4)}</td>
+                                    return (
+                                        <React.Fragment key={alert.alert_id}>
+                                            <tr
+                                                className={`alert-row ${alert.status} ${isExpanded ? 'expanded' : ''}`}
+                                                onClick={() => setExpandedAlertId(isExpanded ? null : alert.alert_id)}
+                                                style={{ cursor: 'pointer' }}
+                                            >
+                                                <td>
+                                                    <div className="alert-type-cell">
+                                                        <svg
+                                                            width="13"
+                                                            height="13"
+                                                            viewBox="0 0 24 24"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeWidth="2.2"
+                                                            strokeLinecap="round"
+                                                            strokeLinejoin="round"
+                                                            className={`expand-chevron ${isExpanded ? 'open' : ''}`}
+                                                            aria-hidden="true"
+                                                        >
+                                                            <polyline points="9 18 15 12 9 6" />
+                                                        </svg>
+                                                        <span className={`alert-level-badge level-${getAlertLabel(alert.alert_type).toLowerCase()}`}>
+                                                            {getAlertLabel(alert.alert_type)}
+                                                        </span>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <code className="system-id-code">{alert.system_id}</code>
+                                                </td>
+                                                <td className="timestamp-cell tabular-nums">{new Date(alert.timestamp).toLocaleString()}</td>
+                                                <td>
+                                                    <div className={`confidence-badge tabular-nums ${getConfidenceColor(alert.confidence)}`}>
+                                                        {(alert.confidence * 100).toFixed(1)}%
+                                                    </div>
+                                                </td>
+                                                <td className="processes-cell">
+                                                    {alert.suspicious_processes?.length ? (
+                                                        <div className="processes-list">
+                                                            {alert.suspicious_processes.slice(0, 3).map((proc, index) => (
+                                                                <span key={index} className="process-badge">{proc}</span>
+                                                            ))}
+                                                            {alert.suspicious_processes.length > 3 && (
+                                                                <span className="more-badge">+{alert.suspicious_processes.length - 3}</span>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted">None</span>
+                                                    )}
+                                                </td>
+                                                <td className="metrics-cell">
+                                                    {alert.metrics ? (
+                                                        <div className="metrics-grid">
+                                                            <div className="metric-item">
+                                                                <span className="metric-label">CPU</span>
+                                                                <span className="metric-value tabular-nums">
+                                                                    {(normalizeNumber(alert.metrics.cpu_usage) ?? 0).toFixed(1)}%
+                                                                </span>
+                                                            </div>
+                                                            <div className="metric-item">
+                                                                <span className="metric-label">MEM</span>
+                                                                <span className="metric-value tabular-nums">
+                                                                    {(normalizeNumber(alert.metrics.memory_usage) ?? 0).toFixed(1)}%
+                                                                </span>
+                                                            </div>
+                                                            <div className="metric-item">
+                                                                <span className="metric-label">GPU</span>
+                                                                <span className="metric-value tabular-nums">
+                                                                    {normalizeNumber(alert.metrics.gpu_utilization) !== null
+                                                                        ? `${normalizeNumber(alert.metrics.gpu_utilization).toFixed(1)}%`
+                                                                        : 'N/A'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="metric-item">
+                                                                <span className="metric-label">VRAM</span>
+                                                                <span className="metric-value tabular-nums">
+                                                                    {normalizeNumber(alert.metrics.gpu_memory_used_mb) !== null && normalizeNumber(alert.metrics.gpu_memory_total_mb) !== null
+                                                                        ? `${normalizeNumber(alert.metrics.gpu_memory_used_mb).toFixed(0)}/${normalizeNumber(alert.metrics.gpu_memory_total_mb).toFixed(0)}MB`
+                                                                        : 'N/A'}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted">None</span>
+                                                    )}
+                                                </td>
+                                                <td>
+                                                    <span className={`badge badge-${alert.status === 'unread' ? 'danger' : 'success'}`}>
+                                                        {alert.status}
+                                                    </span>
+                                                </td>
+                                                <td onClick={(e) => e.stopPropagation()}>
+                                                    <div className="alert-actions">
+                                                        {isConfirmingDelete ? (
+                                                            <>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-danger"
+                                                                    onClick={() => handleDeleteAlert(alert.alert_id)}
+                                                                >
+                                                                    Confirm
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-secondary"
+                                                                    onClick={() => setConfirmDeleteId(null)}
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                            </>
+                                                        ) : alert.status === 'unread' ? (
+                                                            <>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-success"
+                                                                    onClick={() => handleUpdateStatus(alert.alert_id, 'acknowledged')}
+                                                                >
+                                                                    Acknowledge
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-secondary"
+                                                                    onClick={() => handleWhitelistClick(alert)}
+                                                                >
+                                                                    Allowlist
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-danger-subtle"
+                                                                    onClick={() => setConfirmDeleteId(alert.alert_id)}
+                                                                >
+                                                                    Remove
+                                                                </button>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <button type="button" className="btn btn-xs btn-secondary" disabled>
+                                                                    Reviewed
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-xs btn-danger-subtle"
+                                                                    onClick={() => setConfirmDeleteId(alert.alert_id)}
+                                                                >
+                                                                    Remove
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                            {isExpanded && (
+                                                <tr className="shap-expansion-row">
+                                                    <td colSpan="8">
+                                                        <div className="shap-panel">
+                                                            <div className="reason-panel">
+                                                                <div className="reason-header">Detection Signals</div>
+                                                                <div className="reason-chips">
+                                                                    {buildReasonChips(alert).map((reason, idx) => (
+                                                                        <span key={idx} className="reason-chip">{reason}</span>
+                                                                    ))}
+                                                                </div>
+                                                                {buildReasonDetails(alert).length > 0 && (
+                                                                    <div className="reason-details">
+                                                                        {buildReasonDetails(alert).map((item, idx) => (
+                                                                            <div key={idx} className="reason-detail-row">
+                                                                                <span className="reason-detail-label">{item.label}</span>
+                                                                                <span className="reason-detail-text">{item.detail}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                                {Array.isArray(alert.metrics?.process_context) && alert.metrics.process_context.length > 0 && (
+                                                                    <div className="reason-context">
+                                                                        <div className="reason-context-title">Process Forensic Context</div>
+                                                                        <table>
+                                                                            <thead>
+                                                                                <tr>
+                                                                                    <th>Process</th>
+                                                                                    <th>Executable Path</th>
+                                                                                    <th>Authenticode Status</th>
                                                                                 </tr>
-                                                                            ))}
-                                                                        </tbody>
-                                                                    </table>
+                                                                            </thead>
+                                                                            <tbody>
+                                                                                {alert.metrics.process_context.slice(0, 4).map((proc, i) => (
+                                                                                    <tr key={i}>
+                                                                                        <td><code>{proc?.name || 'unknown'}</code></td>
+                                                                                        <td className="reason-path">{proc?.exe_path || 'N/A'}</td>
+                                                                                        <td className="reason-signature">{proc?.signature_status || 'unknown'}</td>
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+
+                                                            <div className="shap-header-row">
+                                                                <h4 className="shap-title">
+                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                                        <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                                                                    </svg>
+                                                                    SHAP Feature Attribution (XGBoost TreeExplainer)
+                                                                </h4>
+                                                                <div className="shap-direction-legend">
+                                                                    <span className="shap-legend-benign">← Benign baseline</span>
+                                                                    <span className="shap-legend-threat">Cryptojacking risk →</span>
                                                                 </div>
                                                             </div>
-                                                        );
-                                                    })() : (
-                                                        <p className="shap-no-data">Feature importance data is not available for this alert. SHAP analysis requires the XGBoost ML model.</p>
-                                                    )}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    )}
-                                    </React.Fragment>
-                                ))}
+
+                                                            {alert.feature_importance && Object.keys(alert.feature_importance).length > 0 ? (() => {
+                                                                const shapData = Object.entries(alert.feature_importance)
+                                                                    .map(([name, data]) => ({
+                                                                        name: name.replace(/_/g, ' '),
+                                                                        shap: Number(data.shap) || 0,
+                                                                        value: data.value,
+                                                                    }))
+                                                                    .sort((a, b) => Math.abs(b.shap) - Math.abs(a.shap))
+                                                                    .slice(0, 8);
+
+                                                                const maxAbs = Math.max(
+                                                                    ...shapData.map((d) => Math.abs(d.shap)),
+                                                                    0.0001
+                                                                );
+
+                                                                return (
+                                                                    <div className="shap-content">
+                                                                        <div className="shap-values-table">
+                                                                            <table>
+                                                                                <thead>
+                                                                                    <tr>
+                                                                                        <th>Feature</th>
+                                                                                        <th>Observed Value</th>
+                                                                                        <th>Directional Impact</th>
+                                                                                        <th style={{ textAlign: 'right' }}>Log-Odds</th>
+                                                                                    </tr>
+                                                                                </thead>
+                                                                                <tbody>
+                                                                                    {shapData.map((f, i) => {
+                                                                                        const ratio = Math.min(1, Math.abs(f.shap) / maxAbs);
+                                                                                        const isPositive = f.shap >= 0;
+                                                                                        return (
+                                                                                            <tr key={i}>
+                                                                                                <td style={{ fontWeight: 500 }}>{f.name}</td>
+                                                                                                <td className="tabular-nums">{f.value}</td>
+                                                                                                <td className="shap-bar-cell">
+                                                                                                    <div className="shap-diverging-track">
+                                                                                                        <div className="shap-half shap-half-neg">
+                                                                                                            {!isPositive && (
+                                                                                                                <div
+                                                                                                                    className="shap-bar-fill neg"
+                                                                                                                    style={{ '--shap-scale': ratio }}
+                                                                                                                />
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                        <div className="shap-axis-line" />
+                                                                                                        <div className="shap-half shap-half-pos">
+                                                                                                            {isPositive && (
+                                                                                                                <div
+                                                                                                                    className="shap-bar-fill pos"
+                                                                                                                    style={{ '--shap-scale': ratio }}
+                                                                                                                />
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                </td>
+                                                                                                <td
+                                                                                                    className="tabular-nums"
+                                                                                                    style={{
+                                                                                                        textAlign: 'right',
+                                                                                                        color: isPositive ? 'var(--danger-color)' : 'var(--primary-color)',
+                                                                                                        fontWeight: 700,
+                                                                                                    }}
+                                                                                                >
+                                                                                                    {f.shap > 0 ? '+' : ''}{f.shap.toFixed(4)}
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        );
+                                                                                    })}
+                                                                                </tbody>
+                                                                            </table>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })() : (
+                                                                <p className="shap-no-data">SHAP feature attribution is not attached to this incident (triggered by deterministic policy or heuristic gate).</p>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </React.Fragment>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

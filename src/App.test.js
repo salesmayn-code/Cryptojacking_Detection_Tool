@@ -10,5 +10,5 @@ jest.mock('./services/api', () => ({
 test('renders login page', async () => {
   render(<App />);
   expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
-  expect(screen.getByText(/CryptoDetect/i)).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: /sign in to cryptodetect/i })).toBeInTheDocument();
 });
