@@ -12,8 +12,8 @@ router = APIRouter()
 
 # Path to agent executable
 AGENT_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / '..' / 'monitoring_agent'
-AGENT_LATEST_VERSION = "9.0"
-AGENT_LATEST_EXE = AGENT_DIR / 'dist' / 'CryptoDetect-Agent-v9.exe'
+AGENT_LATEST_VERSION = "1.0"
+AGENT_LATEST_EXE = AGENT_DIR / 'dist' / 'CryptoDetect-Agent-v1.exe'
 AGENT_LEGACY_VERSION = "7.0"
 AGENT_LEGACY_EXE = AGENT_DIR / 'dist' / 'CryptoDetect-Agent-v7.exe'
 
@@ -87,7 +87,7 @@ async def setup_instructions():
             {
                 "step": 1,
                 "title": "Download Agent",
-                "description": "Download the latest CryptoDetect-Agent-v9.exe from the button above"
+                "description": "Download the latest CryptoDetect-Agent-v1.exe from the button above"
             },
             {
                 "step": 2,

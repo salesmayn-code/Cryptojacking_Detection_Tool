@@ -21,7 +21,7 @@ from pathlib import Path
 
 import requests
 
-CURRENT_VERSION = "9.0"
+CURRENT_VERSION = "1.0"
 CHECK_INTERVAL = 3600          # 1 hour
 
 

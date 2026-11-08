@@ -90,7 +90,7 @@ async def health_check():
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from backend.routes import auth, systems, metrics, alerts, reports, agent, audit, notifications
+from backend.routes import auth, systems, metrics, alerts, reports, agent, audit, notifications, containment
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(systems.router, prefix="/api/systems", tags=["Systems"])
@@ -100,6 +100,7 @@ app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
 app.include_router(audit.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(containment.router, prefix="/api", tags=["Containment"])
 
 
 if __name__ == "__main__":

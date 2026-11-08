@@ -205,6 +205,7 @@ async def delete_alert(
     if alert.system_id not in allowed_system_ids:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    from backend.models.agent_command import AgentCommand
     from backend.services.audit_service import log_action
     log_action(
         db,
@@ -215,6 +216,7 @@ async def delete_alert(
         details={"system_id": alert.system_id},
     )
 
+    db.query(AgentCommand).filter(AgentCommand.alert_id == alert.id).update({"alert_id": None})
     db.delete(alert)
     db.commit()
     return {"status": "success", "deleted": alert_id}

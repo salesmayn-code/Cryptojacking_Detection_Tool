@@ -1,0 +1,150 @@
+{
+  "generated_at": "2026-11-08T10:12:09.156161",
+  "total_episodes": 72,
+  "frames_per_episode": 10,
+  "total_frames": 720,
+  "detectors": {
+    "Naive CPU >= 90% Rule": {
+      "tp": 12,
+      "fp": 1,
+      "tn": 23,
+      "fn": 36,
+      "accuracy": 0.4861,
+      "precision": 0.9231,
+      "recall": 0.25,
+      "f1": 0.3934,
+      "fpr": 0.0417,
+      "accuracy_ci95": [
+        0.3743,
+        0.5993
+      ],
+      "recall_ci95": [
+        0.1492,
+        0.3878
+      ]
+    },
+    "Uncalibrated Kaggle XGBoost": {
+      "tp": 48,
+      "fp": 24,
+      "tn": 0,
+      "fn": 0,
+      "accuracy": 0.6667,
+      "precision": 0.6667,
+      "recall": 1.0,
+      "f1": 0.8,
+      "fpr": 1.0,
+      "accuracy_ci95": [
+        0.5518,
+        0.7647
+      ],
+      "recall_ci95": [
+        0.9259,
+        1.0
+      ]
+    },
+    "SHAP Cross-OS Gate (Prior)": {
+      "tp": 12,
+      "fp": 12,
+      "tn": 12,
+      "fn": 36,
+      "accuracy": 0.3333,
+      "precision": 0.5,
+      "recall": 0.25,
+      "f1": 0.3333,
+      "fpr": 0.5,
+      "accuracy_ci95": [
+        0.2353,
+        0.4482
+      ],
+      "recall_ci95": [
+        0.1492,
+        0.3878
+      ]
+    },
+    "CryptoDetect Evasion-Resilient": {
+      "tp": 48,
+      "fp": 0,
+      "tn": 24,
+      "fn": 0,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "fpr": 0.0,
+      "accuracy_ci95": [
+        0.9493,
+        1.0
+      ],
+      "recall_ci95": [
+        0.9259,
+        1.0
+      ]
+    }
+  },
+  "scenario_accuracy_by_detector": {
+    "Naive CPU >= 90% Rule": {
+      "benign_idle_browsing": 1.0,
+      "benign_heavy_compute": 0.9167,
+      "miner_full_load": 1.0,
+      "miner_throttled_25pct": 0.0,
+      "miner_idle_afk": 0.0,
+      "miner_tls_spoof_yara": 0.0
+    },
+    "Uncalibrated Kaggle XGBoost": {
+      "benign_idle_browsing": 0.0,
+      "benign_heavy_compute": 0.0,
+      "miner_full_load": 1.0,
+      "miner_throttled_25pct": 1.0,
+      "miner_idle_afk": 1.0,
+      "miner_tls_spoof_yara": 1.0
+    },
+    "SHAP Cross-OS Gate (Prior)": {
+      "benign_idle_browsing": 1.0,
+      "benign_heavy_compute": 0.0,
+      "miner_full_load": 1.0,
+      "miner_throttled_25pct": 0.0,
+      "miner_idle_afk": 0.0,
+      "miner_tls_spoof_yara": 0.0
+    },
+    "CryptoDetect Evasion-Resilient": {
+      "benign_idle_browsing": 1.0,
+      "benign_heavy_compute": 1.0,
+      "miner_full_load": 1.0,
+      "miner_throttled_25pct": 1.0,
+      "miner_idle_afk": 1.0,
+      "miner_tls_spoof_yara": 1.0
+    }
+  },
+  "scenarios": [
+    {
+      "key": "benign_idle_browsing",
+      "label": "Benign Idle & Browsing",
+      "ground_truth": 0
+    },
+    {
+      "key": "benign_heavy_compute",
+      "label": "Benign Heavy (7-Zip / Build / Blender)",
+      "ground_truth": 0
+    },
+    {
+      "key": "miner_full_load",
+      "label": "Standard Full-Load Miner",
+      "ground_truth": 1
+    },
+    {
+      "key": "miner_throttled_25pct",
+      "label": "Throttled 25%-CPU Miner",
+      "ground_truth": 1
+    },
+    {
+      "key": "miner_idle_afk",
+      "label": "Idle-Aware (--pause-on-active) Miner",
+      "ground_truth": 1
+    },
+    {
+      "key": "miner_tls_spoof_yara",
+      "label": "Stealth TLS (:443) + Masquerade + YARA",
+      "ground_truth": 1
+    }
+  ]
+}

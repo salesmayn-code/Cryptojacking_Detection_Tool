@@ -1,9 +1,13 @@
 """
-CryptoDetect Monitoring Agent v9.0
+CryptoDetect Monitoring Agent v1.0
 - Tray-compatible monitoring engine used by agent_gui.py
 - Emits host telemetry fields for 20-feature ML inference
 - Keeps legacy keys for backward compatibility
 """
+import shutil
+import csv
+import io
+import re
 import psutil
 import json
 import hashlib
@@ -39,11 +43,18 @@ except Exception:
     StringExtractor = None
     STATIC_ANALYSIS_AVAILABLE = False
 
+try:
+    from static_analysis.yara_scanner import YaraMinerScanner
+    YARA_SCANNER_AVAILABLE = True
+except Exception:
+    YaraMinerScanner = None
+    YARA_SCANNER_AVAILABLE = False
+
 
 try:
     from auto_updater import CURRENT_VERSION as AGENT_VERSION
 except Exception:
-    AGENT_VERSION = "9.0"
+    AGENT_VERSION = "1.0"
 
 CONFIG_DIR = Path.home() / ".cryptodetect"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -82,14 +93,36 @@ class MonitoringAgent:
         max_scan_bytes = 32 * 1024 * 1024
         self._pe_analyzer = PEAnalyzer(max_scan_bytes) if STATIC_ANALYSIS_AVAILABLE else None
         self._string_extractor = StringExtractor(max_scan_bytes) if STATIC_ANALYSIS_AVAILABLE else None
+        self._yara_scanner = YaraMinerScanner(max_scan_bytes) if YARA_SCANNER_AVAILABLE else None
         self._miner_ports = {3333, 3334, 4444, 5555, 6666, 7777, 9999, 14433, 14444}
+        self._tls_miner_ports = {443, 8443}
+        self._pool_domain_keywords = (
+            "supportxmr", "minexmr", "nanopool", "2miners", "moneroocean",
+            "hashvault", "herominers", "c3pool", "unmineable", "f2pool",
+            "ethermine", "nicehash", "poolin", "antpool", "kryptex", "xmrpool",
+        )
+        self._monitored_spoof_names = {
+            "svchost.exe", "dllhost.exe", "conhost.exe", "taskhostw.exe",
+            "spoolsv.exe", "runtimebroker.exe", "searchindexer.exe", "sihost.exe", "dwm.exe",
+        }
+        self._wsl_process_names = {"vmmem", "vmmemwsl", "wsl.exe", "wslhost.exe"}
+        self._suspicious_path_tokens = (
+            "\\appdata\\local\\temp\\", "\\appdata\\roaming\\", "\\windows\\temp\\",
+            "\\programdata\\", "\\users\\public\\", "\\$recycle",
+        )
         self._gpu_wmi_initialized = False
         self._gpu_wmi = None
         self._nvml = None
         self._nvml_handle = None
+        self._gpu_compute_pids = {}
+        self._dns_cache_map = {}
+        self._dns_cache_time = 0.0
         self._parent_cache = {}
         self._process_detail_counts = None
         self._process_detail_time = 0.0
+        self.quarantine_dir = CONFIG_DIR / "quarantine"
+        self._active_command_ids = set()
+        self._command_lock = threading.Lock()
         # Prime psutil non-blocking CPU percent sampler for accurate deltas.
         psutil.cpu_percent(interval=None)
 
@@ -207,6 +240,76 @@ class MonitoringAgent:
             "parent_name": parent_name,
         }
 
+    def _get_user_idle_seconds(self):
+        """Return seconds since last keyboard/mouse input on Windows, or 0.0."""
+        if os.name != "nt" or not HAS_CTYPES:
+            return 0.0
+        try:
+            class _LASTINPUTINFO(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+            lii = _LASTINPUTINFO()
+            lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+            if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+                tick_now = ctypes.windll.kernel32.GetTickCount()
+                idle_ms = (int(tick_now) - int(lii.dwTime)) & 0xFFFFFFFF
+                return round(max(0.0, idle_ms / 1000.0), 2)
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_dns_cache_map(self):
+        """Return cached {ip: [domains]} mapping from Windows DNS Client cache."""
+        now = time.monotonic()
+        if self._dns_cache_map and (now - self._dns_cache_time) < 30.0:
+            return self._dns_cache_map
+        if os.name != "nt":
+            self._dns_cache_time = now
+            return self._dns_cache_map
+
+        mapping = {}
+        try:
+            startupinfo, creationflags = self._windows_startupinfo()
+            cmd = (
+                "Get-DnsClientCache | Where-Object { $_.Data } | "
+                "Select-Object -First 250 Entry, Data | ConvertTo-Json -Compress"
+            )
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+            if completed.returncode == 0 and (completed.stdout or "").strip():
+                rows = json.loads(completed.stdout.strip())
+                if isinstance(rows, dict):
+                    rows = [rows]
+                if isinstance(rows, list):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        ip_val = str(row.get("Data") or "").strip()
+                        domain_val = str(row.get("Entry") or "").strip().lower()
+                        if not ip_val or not domain_val:
+                            continue
+                        try:
+                            ipaddress.ip_address(ip_val)
+                        except ValueError:
+                            continue
+                        mapping.setdefault(ip_val, set()).add(domain_val)
+        except Exception:
+            pass
+
+        self._dns_cache_map = {ip: sorted(list(domains))[:4] for ip, domains in mapping.items()}
+        self._dns_cache_time = now
+        return self._dns_cache_map
+
+    def _matches_pool_domain(self, domain_name):
+        lowered = str(domain_name or "").lower()
+        return any(kw in lowered for kw in self._pool_domain_keywords) or lowered.startswith("pool.")
+
     def _get_process_network_summary(self, proc):
         summary = {
             "connection_count": 0,
@@ -216,6 +319,9 @@ class MonitoringAgent:
             "remote_ports": [],
             "has_external_connection": False,
             "has_miner_port": False,
+            "resolved_domains": [],
+            "has_pool_domain": False,
+            "has_tls_external": False,
         }
         try:
             connections = proc.connections(kind="inet")
@@ -227,6 +333,7 @@ class MonitoringAgent:
         established = 0
         has_external = False
         has_miner_port = False
+        has_tls_port = False
 
         for conn in connections:
             raddr = getattr(conn, "raddr", None)
@@ -244,10 +351,25 @@ class MonitoringAgent:
                     remote_ports.add(port_int)
                     if port_int in self._miner_ports:
                         has_miner_port = True
+                    if port_int in self._tls_miner_ports:
+                        has_tls_port = True
                 except Exception:
                     pass
             if str(getattr(conn, "status", "")).upper() == "ESTABLISHED":
                 established += 1
+
+        resolved_domains = []
+        has_pool_domain = False
+        if has_external and remote_ips:
+            dns_map = self._get_dns_cache_map()
+            seen_domains = set()
+            for ip in sorted(remote_ips):
+                for domain in dns_map.get(ip, []):
+                    if domain not in seen_domains:
+                        seen_domains.add(domain)
+                        resolved_domains.append(domain)
+                    if self._matches_pool_domain(domain):
+                        has_pool_domain = True
 
         summary["connection_count"] = len(connections)
         summary["established_count"] = established
@@ -256,10 +378,13 @@ class MonitoringAgent:
         summary["remote_ports"] = sorted(list(remote_ports))[:8]
         summary["has_external_connection"] = has_external
         summary["has_miner_port"] = has_miner_port
+        summary["resolved_domains"] = resolved_domains[:6]
+        summary["has_pool_domain"] = has_pool_domain
+        summary["has_tls_external"] = bool(has_external and established > 0 and has_tls_port)
         return summary
 
     def _collect_static_evidence(self, exe_path, exe_hash):
-        if not STATIC_ANALYSIS_AVAILABLE:
+        if not (STATIC_ANALYSIS_AVAILABLE or YARA_SCANNER_AVAILABLE):
             return None
         if not exe_path or not os.path.exists(exe_path):
             return None
@@ -271,6 +396,7 @@ class MonitoringAgent:
         try:
             pe_features = self._pe_analyzer.analyze_file(exe_path) if self._pe_analyzer else None
             str_features = self._string_extractor.extract_and_analyze(exe_path) if self._string_extractor else None
+            yara_features = self._yara_scanner.scan_file(exe_path) if self._yara_scanner else None
         except Exception:
             self._static_cache[cache_key] = None
             return None
@@ -285,6 +411,11 @@ class MonitoringAgent:
             "suspicious_imports": [],
             "file_sha256": exe_hash,
             "total_entropy": None,
+            "yara_matched": False,
+            "yara_rules": [],
+            "yara_severity": "none",
+            "is_packed": False,
+            "packed_rules": [],
         }
 
         if str_features and str_features.get("analysis"):
@@ -304,12 +435,19 @@ class MonitoringAgent:
             if not result["file_sha256"]:
                 result["file_sha256"] = pe_features.get("sha256")
 
+        if yara_features:
+            result["yara_matched"] = bool(yara_features.get("yara_matched"))
+            result["yara_rules"] = list(yara_features.get("miner_rules") or [])[:8]
+            result["yara_severity"] = str(yara_features.get("max_severity") or "none")
+            result["is_packed"] = bool(yara_features.get("is_packed"))
+            result["packed_rules"] = list(yara_features.get("packed_rules") or [])[:4]
+
         self._static_cache[cache_key] = result
         return result
 
     def _get_static_evidence_nowait(self, exe_path, exe_hash):
         """Return cached evidence, or None while a background thread scans the file."""
-        if not STATIC_ANALYSIS_AVAILABLE or not exe_path:
+        if not (STATIC_ANALYSIS_AVAILABLE or YARA_SCANNER_AVAILABLE) or not exe_path:
             return None
 
         cache_key = exe_hash or exe_path
@@ -337,33 +475,120 @@ class MonitoringAgent:
                 with self._static_lock:
                     self._static_queued.discard(cache_key)
 
+    @staticmethod
+    def _safe_proc_cmdline(proc):
+        """Extract sanitized, bounded CLI string without leaking secrets or mocks."""
+        try:
+            raw = proc.cmdline()
+        except Exception:
+            return ""
+        if not isinstance(raw, (list, tuple)):
+            return ""
+        cleaned_tokens = []
+        redact_next = False
+        sensitive_flags = {"--password", "--secret", "--api-access-token", "--http-access-token", "--token"}
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            token = item.strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if redact_next:
+                cleaned_tokens.append("<redacted>")
+                redact_next = False
+                continue
+            if lowered in sensitive_flags:
+                cleaned_tokens.append(token)
+                redact_next = True
+                continue
+            if any(lowered.startswith(flag + "=") for flag in sensitive_flags):
+                flag_name = token.split("=", 1)[0]
+                cleaned_tokens.append(f"{flag_name}=<redacted>")
+                continue
+            cleaned_tokens.append(token)
+        joined = " ".join(cleaned_tokens)
+        return joined[:512]
+
+    @staticmethod
+    def _safe_proc_counters(proc):
+        """Return (ctx_switches_total, io_bytes_total) safely coerced from ints."""
+        ctx_total = 0
+        io_total = 0
+        try:
+            ctx = proc.num_ctx_switches()
+            if ctx is not None:
+                v = getattr(ctx, "voluntary", 0)
+                iv = getattr(ctx, "involuntary", 0)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    ctx_total += max(0, int(v))
+                if isinstance(iv, (int, float)) and not isinstance(iv, bool):
+                    ctx_total += max(0, int(iv))
+        except Exception:
+            pass
+        try:
+            io_c = proc.io_counters()
+            if io_c is not None:
+                rb = getattr(io_c, "read_bytes", 0)
+                wb = getattr(io_c, "write_bytes", 0)
+                if isinstance(rb, (int, float)) and not isinstance(rb, bool):
+                    io_total += max(0, int(rb))
+                if isinstance(wb, (int, float)) and not isinstance(wb, bool):
+                    io_total += max(0, int(wb))
+        except Exception:
+            pass
+        return ctx_total, io_total
+
+    @staticmethod
+    def _is_suspicious_cmdline_text(cmdline):
+        if not cmdline:
+            return False
+        lowered = cmdline.lower()
+        strong_tokens = (
+            "stratum+tcp://", "stratum+ssl://", "stratum+udp://", "stratum2+tcp://",
+            "--donate-level", "--cpu-max-threads-pct", "--pause-on-active",
+            "rx/0", "cryptonight", "xmrig", "randomx", "moneroocean", "supportxmr", "minexmr",
+        )
+        return any(tok in lowered for tok in strong_tokens)
+
+    def _is_suspicious_path_local(self, exe_path):
+        if not exe_path:
+            return False
+        lowered = str(exe_path).lower()
+        return any(tok in lowered for tok in self._suspicious_path_tokens)
+
     def filter_processes(self):
         processes = []
-        benign_processes = {
+        core_kernel_benign = {
             "system idle process", "system", "registry", "smss.exe", "csrss.exe",
-            "wininit.exe", "services.exe", "lsass.exe", "dwm.exe",
-            "winlogon.exe", "fontdrvhost.exe", "sihost.exe", "taskhostw.exe",
-            "runtimebroker.exe", "searchindexer.exe",
+            "wininit.exe", "services.exe", "lsass.exe", "winlogon.exe", "fontdrvhost.exe",
         }
+        gpu_compute_pids = dict(self._gpu_compute_pids or {})
         candidates = []
         for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
             try:
                 info = proc.info
                 name_norm = self._normalize_name(info.get('name'))
-                if name_norm in benign_processes:
+                if name_norm in core_kernel_benign:
                     continue
+                pid_val = info.get('pid')
                 cpu_percent = float(info.get('cpu_percent') or 0.0)
                 memory_percent = float(info.get('memory_percent') or 0.0)
                 is_svchost = name_norm == "svchost.exe"
-                if cpu_percent > 4.0 or memory_percent > 4.0 or is_svchost:
-                    candidates.append((proc, info, cpu_percent, memory_percent))
+                is_wsl = name_norm in self._wsl_process_names
+                is_gpu_compute = isinstance(pid_val, int) and pid_val in gpu_compute_pids
+                is_masquerade_alias = (name_norm in self._monitored_spoof_names) and (
+                    cpu_percent >= 2.0 or memory_percent >= 2.0
+                )
+                if cpu_percent > 4.0 or memory_percent > 4.0 or is_svchost or is_wsl or is_gpu_compute or is_masquerade_alias:
+                    candidates.append((proc, info, cpu_percent, memory_percent, is_gpu_compute))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
 
         # Only the top 18 are reported, so only they need the slower per-process lookups.
-        candidates.sort(key=lambda c: c[2], reverse=True)
+        candidates.sort(key=lambda c: (1 if c[4] else 0, c[2]), reverse=True)
         parent_cache = {}
-        for proc, info, cpu_percent, memory_percent in candidates[:18]:
+        for proc, info, cpu_percent, memory_percent, is_gpu_compute in candidates[:18]:
             try:
                 try:
                     exe_path = proc.exe()
@@ -382,9 +607,22 @@ class MonitoringAgent:
                 parent_cache[process_key] = parent_info
                 signature_info = self._get_signature_info(exe_path, exe_hash)
                 net_summary = self._get_process_network_summary(proc)
+                cmdline = self._safe_proc_cmdline(proc)
+                ctx_switches_total, io_bytes_total = self._safe_proc_counters(proc)
+                gpu_mem_mb = round(float(gpu_compute_pids.get(info['pid'], 0.0) or 0.0), 2)
+
+                need_static_scan = (
+                    cpu_percent >= 20.0
+                    or is_gpu_compute
+                    or self._is_suspicious_cmdline_text(cmdline)
+                    or net_summary.get("has_miner_port")
+                    or net_summary.get("has_pool_domain")
+                    or (self._is_suspicious_path_local(exe_path) and (cpu_percent >= 4.0 or net_summary.get("has_external_connection")))
+                )
                 static_evidence = None
-                if cpu_percent >= 20.0:
+                if need_static_scan:
                     static_evidence = self._get_static_evidence_nowait(exe_path, exe_hash)
+
                 processes.append({
                     'pid': info['pid'],
                     'name': info['name'],
@@ -398,6 +636,11 @@ class MonitoringAgent:
                     'signature_status': signature_info.get("signature_status", "unknown"),
                     'publisher': signature_info.get("publisher", ""),
                     'is_trusted_signature': bool(signature_info.get("is_trusted_signature", False)),
+                    'cmdline': cmdline,
+                    'ctx_switches_total': ctx_switches_total,
+                    'io_bytes_total': io_bytes_total,
+                    'gpu_compute_active': is_gpu_compute,
+                    'gpu_memory_mb': gpu_mem_mb,
                     'network_summary': net_summary,
                     'static_analysis': static_evidence,
                 })
@@ -517,9 +760,33 @@ class MonitoringAgent:
                 self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             memory = self._nvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
             utilization = self._nvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+
+            compute_pids = {}
+            for fn_name in ("nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses"):
+                fn = getattr(self._nvml, fn_name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    entries = fn(self._nvml_handle)
+                    if not isinstance(entries, (list, tuple)):
+                        continue
+                    for entry in entries:
+                        pid_val = getattr(entry, "pid", None)
+                        if isinstance(pid_val, int) and not isinstance(pid_val, bool):
+                            mem_raw = getattr(entry, "usedGpuMemory", 0)
+                            if isinstance(mem_raw, (int, float)) and not isinstance(mem_raw, bool) and 0 <= mem_raw < 512 * (1024 ** 3):
+                                mem_mb = float(mem_raw) / (1024 * 1024)
+                            else:
+                                mem_mb = 0.0
+                            compute_pids[pid_val] = max(compute_pids.get(pid_val, 0.0), mem_mb)
+                except Exception:
+                    continue
+            self._gpu_compute_pids = compute_pids
+
             return float(utilization.gpu), memory.used / (1024 * 1024), memory.total / (1024 * 1024)
         except Exception:
             self._nvml_handle = False
+            self._gpu_compute_pids = {}
             return None
 
     def _query_nvidia_smi(self):
@@ -715,9 +982,14 @@ class MonitoringAgent:
             process_counts = self._collect_process_counts()
             load_avg = self._collect_load_avg(cpu_percent)
             gpu_metrics = self._collect_gpu_metrics()
+            user_idle_seconds = self._get_user_idle_seconds()
 
             return {
                 'timestamp': datetime.now().isoformat(),
+                'activity': {
+                    'user_idle_seconds': user_idle_seconds,
+                    'is_idle': user_idle_seconds >= 30.0,
+                },
                 'cpu': {
                     'percent': cpu_percent,
                     'cpu_percent': cpu_percent,
@@ -796,6 +1068,439 @@ class MonitoringAgent:
             return []
         return None
 
+    def _is_protected_containment_target(self, process_name, exe_path):
+        name_norm = self._normalize_name(process_name)
+        path_norm = os.path.realpath(str(exe_path)).lower() if exe_path else ""
+        protected_prefixes = (
+            "\\windows\\system32\\",
+            "\\windows\\syswow64\\",
+            "\\windows\\winsxs\\",
+            "/usr/bin/",
+            "/bin/",
+            "/sbin/",
+        )
+        protected_names = {
+            "system", "system idle process", "registry", "smss.exe", "csrss.exe",
+            "wininit.exe", "services.exe", "lsass.exe", "winlogon.exe",
+            "dwm.exe", "explorer.exe", "cryptodetect-agent-v1.exe", "cryptodetect-agent-v9.exe",
+        }
+        if "cryptodetect" in name_norm:
+            return True
+        if path_norm and any(pref in path_norm.replace("/", "\\") for pref in protected_prefixes):
+            return True
+        if name_norm in protected_names and not path_norm:
+            return True
+        return False
+
+    def _verify_target_process(self, pid, expected_create_time=None, expected_name=None):
+        if pid is None:
+            return None, "Missing target PID"
+        try:
+            proc = psutil.Process(int(pid))
+            actual_name = self._normalize_name(proc.name())
+            if expected_name and actual_name and actual_name != self._normalize_name(expected_name):
+                return None, f"Process name mismatch at PID {pid} (expected {expected_name}, found {actual_name})"
+            if expected_create_time is not None:
+                actual_ct = float(proc.create_time())
+                if abs(actual_ct - float(expected_create_time)) > 2.5:
+                    return None, f"PID {pid} reuse detected (create_time mismatch)"
+            return proc, None
+        except psutil.NoSuchProcess:
+            return None, f"Process PID {pid} is no longer running"
+        except psutil.AccessDenied:
+            return None, f"Access denied inspecting PID {pid}"
+        except Exception as exc:
+            return None, f"Failed resolving PID {pid}: {exc}"
+
+    @staticmethod
+    def _score_persistence_entry(category, name, location):
+        loc_lower = str(location or "").lower()
+        name_lower = str(name or "").lower()
+        reasons = []
+        suspicious_path_tokens = (
+            "\\temp\\", "\\appdata\\", "\\programdata\\", "\\users\\public\\",
+            "/tmp/", "/dev/shm/",
+        )
+        suspicious_cmd_tokens = (
+            "xmrig", "stratum", "randomx", "cryptonight", "minexmr", "supportxmr",
+            "-enc", "-encodedcommand", "mshta", "wscript", "regsvr32", "donate-level",
+        )
+        for tok in suspicious_path_tokens:
+            if tok in loc_lower:
+                reasons.append(f"path:{tok.strip(os.sep)}")
+        for tok in suspicious_cmd_tokens:
+            if tok in loc_lower or tok in name_lower:
+                reasons.append(f"indicator:{tok}")
+        return {
+            "category": str(category),
+            "name": str(name),
+            "target": str(location)[:260],
+            "location": str(location)[:260],
+            "suspicious": len(reasons) > 0,
+            "reasons": reasons[:5],
+        }
+
+    def _audit_windows_persistence(self):
+        findings = []
+        scanned_sources = []
+        counts = {
+            "registry_run": 0,
+            "scheduled_tasks": 0,
+            "non_system_services": 0,
+            "startup_items": 0,
+            "wsl_running_distros": 0,
+        }
+
+        if os.name == "nt":
+            # 1. Registry Run / RunOnce (HKCU + HKLM)
+            try:
+                import winreg
+
+                scanned_sources.append("registry_run")
+                run_paths = [
+                    (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKCU\\Run"),
+                    (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\RunOnce", "HKCU\\RunOnce"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run", "HKLM\\Run"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\RunOnce", "HKLM\\RunOnce"),
+                ]
+                for hive, subkey, label in run_paths:
+                    try:
+                        with winreg.OpenKey(hive, subkey) as key:
+                            count = winreg.QueryInfoKey(key)[1]
+                            counts["registry_run"] += count
+                            for idx in range(count):
+                                val_name, val_data, _ = winreg.EnumValue(key, idx)
+                                entry = self._score_persistence_entry(label, val_name, val_data)
+                                if entry["suspicious"]:
+                                    findings.append(entry)
+                    except OSError:
+                        continue
+            except Exception:
+                pass
+
+            # 2. Scheduled Tasks (CSV parsed cleanly)
+            try:
+                scanned_sources.append("scheduled_tasks")
+                startupinfo, creationflags = self._windows_startupinfo()
+                completed = subprocess.run(
+                    ["schtasks", "/query", "/fo", "CSV", "/v"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if completed.returncode == 0 and completed.stdout:
+                    reader = csv.DictReader(io.StringIO(completed.stdout))
+                    for row in reader:
+                        task_name = str(row.get("TaskName") or "").strip()
+                        task_run = str(row.get("Task To Run") or "").strip()
+                        if not task_run or "\\Microsoft\\Windows\\" in task_name:
+                            continue
+                        counts["scheduled_tasks"] += 1
+                        entry = self._score_persistence_entry("ScheduledTask", task_name, task_run)
+                        if entry["suspicious"]:
+                            findings.append(entry)
+            except Exception:
+                pass
+
+            # 3. Startup folders
+            try:
+                scanned_sources.append("startup_folders")
+                startup_dirs = [
+                    Path(os.getenv("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+                    Path(os.getenv("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+                ]
+                for sdir in startup_dirs:
+                    if not sdir.is_dir():
+                        continue
+                    for item in sdir.iterdir():
+                        counts["startup_items"] += 1
+                        entry = self._score_persistence_entry("StartupFolder", item.name, str(item))
+                        findings.append(entry)
+            except Exception:
+                pass
+
+            # 4. Windows Services running outside Windows\\System32
+            try:
+                scanned_sources.append("windows_services")
+                startupinfo, creationflags = self._windows_startupinfo()
+                svc_cmd = (
+                    "Get-CimInstance Win32_Service | "
+                    "Where-Object { $_.PathName -and $_.PathName -notmatch 'Windows\\\\System32' } | "
+                    "Select-Object -First 80 Name, State, PathName | ConvertTo-Json -Compress"
+                )
+                completed = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", svc_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if completed.returncode == 0 and (completed.stdout or "").strip():
+                    rows = json.loads(completed.stdout.strip())
+                    if isinstance(rows, dict):
+                        rows = [rows]
+                    if isinstance(rows, list):
+                        counts["non_system_services"] = len(rows)
+                        for row in rows:
+                            entry = self._score_persistence_entry(
+                                f"Service({row.get('State', '?')})",
+                                row.get("Name"),
+                                row.get("PathName"),
+                            )
+                            if entry["suspicious"]:
+                                findings.append(entry)
+            except Exception:
+                pass
+
+            # 5. Active WSL2 instances
+            try:
+                scanned_sources.append("wsl2")
+                startupinfo, creationflags = self._windows_startupinfo()
+                completed = subprocess.run(
+                    ["wsl", "-l", "--running", "-q"],
+                    capture_output=True,
+                    timeout=3,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if completed.returncode == 0 and completed.stdout:
+                    decoded = completed.stdout.decode("utf-16-le", errors="ignore").strip()
+                    distros = [line.strip().replace("\x00", "") for line in decoded.splitlines() if line.strip().replace("\x00", "")]
+                    counts["wsl_running_distros"] = len(distros)
+                    for distro in distros:
+                        findings.append({
+                            "category": "WSL2_Running",
+                            "name": distro,
+                            "target": f"wsl -d {distro}",
+                            "location": f"wsl -d {distro}",
+                            "suspicious": True,
+                            "reasons": ["active_headless_linux_subsystem"],
+                        })
+            except Exception:
+                pass
+
+        suspicious_entries = [f for f in findings if f.get("suspicious")]
+        return {
+            "scanned_sources": scanned_sources,
+            "counts": counts,
+            "findings": findings[:40],
+            "suspicious_entries": suspicious_entries[:40],
+            "total_findings": len(findings),
+            "suspicious_count": len(suspicious_entries),
+            "audited_at": datetime.utcnow().isoformat(),
+        }
+
+    def execute_containment_command(self, cmd):
+        """Execute a signed/queued SOC containment command safely and return (status, result_data, error_message)."""
+        action = str(cmd.get("action") or "").strip().lower()
+        target = cmd.get("target_payload") or {}
+        pid = target.get("pid")
+        create_time = target.get("create_time")
+        process_name = target.get("process_name")
+        exe_path = target.get("exe_path")
+        exe_hash = target.get("exe_hash")
+        remote_ip = target.get("remote_ip")
+
+        if action == "suspend_process":
+            proc, err = self._verify_target_process(pid, create_time, process_name)
+            if err:
+                return "failed", {}, err
+            try:
+                proc.suspend()
+                return "completed", {"pid": proc.pid, "process_name": process_name, "state": "suspended"}, None
+            except Exception as exc:
+                return "failed", {}, f"Failed to suspend PID {pid}: {exc}"
+
+        if action == "resume_process":
+            proc, err = self._verify_target_process(pid, create_time, process_name)
+            if err:
+                return "failed", {}, err
+            try:
+                proc.resume()
+                return "completed", {"pid": proc.pid, "process_name": process_name, "state": "resumed"}, None
+            except Exception as exc:
+                return "failed", {}, f"Failed to resume PID {pid}: {exc}"
+
+        if action == "kill_process_tree":
+            if self._is_protected_containment_target(process_name, exe_path):
+                return "failed", {}, "Refused: protected system binary cannot be killed"
+            proc, err = self._verify_target_process(pid, create_time, process_name)
+            if err:
+                return "failed", {}, err
+            try:
+                children = proc.children(recursive=True)
+                for child in reversed(children):
+                    try:
+                        child.terminate()
+                    except Exception:
+                        pass
+                proc.terminate()
+                _, alive = psutil.wait_procs([proc] + children, timeout=3)
+                for p in alive:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+                return "completed", {
+                    "pid": proc.pid,
+                    "process_name": process_name,
+                    "terminated_children": len(children),
+                    "killed_children": len(children),
+                }, None
+            except Exception as exc:
+                return "failed", {}, f"Failed killing process tree PID {pid}: {exc}"
+
+        if action == "quarantine_binary":
+            if not exe_path:
+                return "failed", {}, "Missing exe_path for quarantine"
+            real_path = os.path.realpath(str(exe_path))
+            if self._is_protected_containment_target(process_name, real_path):
+                return "failed", {}, "Refused: protected system file cannot be quarantined"
+            if not os.path.isfile(real_path):
+                return "failed", {}, f"Binary no longer present on disk: {real_path}"
+            actual_hash = self._file_hash(real_path)
+            if exe_hash and actual_hash and actual_hash.lower() != str(exe_hash).strip().lower():
+                return "failed", {}, "Refused: binary SHA-256 changed since alert was recorded"
+
+            if pid is not None:
+                proc, _ = self._verify_target_process(pid, create_time, process_name)
+                if proc is not None:
+                    try:
+                        for child in reversed(proc.children(recursive=True)):
+                            child.kill()
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
+
+            try:
+                self.quarantine_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(real_path))
+                short_hash = (actual_hash or "nohash")[:12]
+                dest_path = self.quarantine_dir / f"{stamp}_{short_hash}_{safe_name}.quarantined"
+                shutil.move(real_path, str(dest_path))
+                meta_path = dest_path.with_suffix(".json")
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "original_path": real_path,
+                            "sha256": actual_hash,
+                            "process_name": process_name,
+                            "quarantined_at": datetime.utcnow().isoformat(),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                return "completed", {
+                    "original_path": real_path,
+                    "quarantine_path": str(dest_path),
+                    "quarantined_path": str(dest_path),
+                    "sha256": actual_hash,
+                }, None
+            except Exception as exc:
+                return "failed", {}, f"Quarantine move failed: {exc}"
+
+        if action == "block_ip":
+            if not remote_ip:
+                return "failed", {}, "Missing remote_ip to block"
+            try:
+                ip_obj = ipaddress.ip_address(str(remote_ip).strip())
+            except ValueError:
+                return "failed", {}, f"Invalid remote IP: {remote_ip}"
+            if (
+                ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local
+                or ip_obj.is_multicast or ip_obj.is_reserved or ip_obj.is_unspecified
+            ):
+                return "failed", {}, f"Refused to block local/private IP {ip_obj}"
+            if os.name != "nt":
+                return "failed", {}, "Windows Firewall netsh requires Windows host"
+            safe_rule = f"CryptoDetect_Block_{str(ip_obj).replace(':', '_')}"
+            try:
+                startupinfo, creationflags = self._windows_startupinfo()
+                completed = subprocess.run(
+                    [
+                        "netsh", "advfirewall", "firewall", "add", "rule",
+                        f"name={safe_rule}", "dir=out", "action=block",
+                        f"remoteip={ip_obj}", "enable=yes",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if completed.returncode != 0:
+                    err_txt = (completed.stderr or completed.stdout or "Requires Administrator privilege").strip()
+                    return "failed", {}, f"Firewall block failed: {err_txt}"
+                return "completed", {"rule_name": safe_rule, "blocked_ip": str(ip_obj)}, None
+            except Exception as exc:
+                return "failed", {}, f"Firewall execution error: {exc}"
+
+        if action == "audit_persistence":
+            try:
+                audit_result = self._audit_windows_persistence()
+                return "completed", audit_result, None
+            except Exception as exc:
+                return "failed", {}, f"Persistence audit failed: {exc}"
+
+        return "failed", {}, f"Unsupported containment action: {action}"
+
+    def _report_command_result(self, command_id, status, result_data, error_message):
+        try:
+            requests.post(
+                f"{self.api_url}/api/agent/commands/{command_id}/result",
+                json={
+                    "status": status,
+                    "result_data": result_data or {},
+                    "error_message": error_message,
+                },
+                headers={"X-API-Key": self.api_key},
+                timeout=10,
+            )
+        except Exception as exc:
+            self._log(f"  [CMD] Failed reporting result for command {command_id}: {exc}")
+
+    def _process_pending_commands(self, commands):
+        if not isinstance(commands, list) or not commands:
+            return
+        for cmd in commands:
+            cmd_id = cmd.get("command_id") or cmd.get("id")
+            if cmd_id is None:
+                continue
+            with self._command_lock:
+                if cmd_id in self._active_command_ids:
+                    continue
+                self._active_command_ids.add(cmd_id)
+            try:
+                status, result_data, error_message = self.execute_containment_command(cmd)
+                self._report_command_result(cmd_id, status, result_data, error_message)
+            finally:
+                with self._command_lock:
+                    self._active_command_ids.discard(cmd_id)
+
+    def _poll_commands_async(self):
+        def _worker():
+            try:
+                resp = requests.get(
+                    f"{self.api_url}/api/agent/commands/{self.system_id}",
+                    headers={"X-API-Key": self.api_key},
+                    timeout=8,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cmds = data.get("commands") or []
+                    if cmds:
+                        self._process_pending_commands(cmds)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def send_batch(self, metrics_batch):
         try:
             resp = requests.post(
@@ -809,6 +1514,13 @@ class MonitoringAgent:
                 model = result.get('model_used', '?')
                 if metrics_batch:
                     self._log(f"  [SENT] {len(metrics_batch)} metrics | Model: {model}")
+                pending_cmds = result.get("pending_commands") or []
+                if pending_cmds:
+                    threading.Thread(
+                        target=self._process_pending_commands,
+                        args=(pending_cmds,),
+                        daemon=True,
+                    ).start()
                 if result.get('alerts'):
                     for a in result['alerts']:
                         confidence_pct = a.get('confidence', 0) * 100

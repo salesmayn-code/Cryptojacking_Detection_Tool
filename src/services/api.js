@@ -66,6 +66,8 @@ export const systemsAPI = {
     create: (data) => api.post('/api/systems', data),
     update: (id, data) => api.put(`/api/systems/${id}`, data),
     delete: (id) => api.delete(`/api/systems/${id}`),
+    auditPersistence: (id) => api.post(`/api/systems/${id}/persistence-audit`),
+    getCommands: (id, limit = 30) => api.get(`/api/systems/${id}/commands`, { params: { limit } }),
 };
 
 // Metrics API
@@ -83,6 +85,8 @@ export const alertsAPI = {
     update: (id, data) => api.put(`/api/alerts/${id}`, data),
     remove: (id) => api.delete(`/api/alerts/${id}`),
     whitelist: (id, data) => api.post(`/api/alerts/${id}/whitelist`, data),
+    dispatchAction: (id, data) => api.post(`/api/alerts/${id}/actions`, data),
+    getActions: (id) => api.get(`/api/alerts/${id}/actions`),
     getBySystem: (systemId, limit = 50) =>
         api.get(`/api/alerts/system/${systemId}`, { params: { limit } }),
     getStats: () => api.get('/api/alerts/stats/summary'),

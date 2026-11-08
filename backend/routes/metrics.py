@@ -52,9 +52,16 @@ except Exception as feature_import_err:
 
 try:
     from dynamic_analysis import DynamicBehaviorMonitor
-    _behavior_monitor = DynamicBehaviorMonitor(max_samples=8)
+    from dynamic_analysis.behavior_monitor import KNOWN_BROWSER_NAMES, TLS_TUNNEL_PORTS
+
+    _behavior_monitor = DynamicBehaviorMonitor(max_samples=24)
 except Exception:
     _behavior_monitor = None
+    KNOWN_BROWSER_NAMES = {
+        "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
+        "opera.exe", "vivaldi.exe", "iexplore.exe", "teams.exe",
+    }
+    TLS_TUNNEL_PORTS = {443, 8443}
 
 
 # Threat-intel integrations are optional at runtime.
@@ -621,6 +628,9 @@ MINER_KEYWORDS = {
     "phoenixminer",
     "nbminer",
     "lolminer",
+    "gminer",
+    "teamredminer",
+    "nanominer",
     "trex",
     "t-rex",
     "cryptonight",
@@ -631,14 +641,57 @@ MINER_KEYWORDS = {
 }
 
 MINER_POOL_PATTERNS = [
-    r"stratum\+tcp://",
+    r"stratum(?:2)?\+(?:tcp|ssl|udp)://",
     r"pool\.",
     r"minexmr",
     r"supportxmr",
+    r"moneroocean",
+    r"hashvault",
+    r"herominers",
+    r"c3pool",
+    r"unmineable",
     r"nanopool",
     r"2miners",
     r"monero",
 ]
+
+WSL_HOST_PROCESS_NAMES = {"vmmem", "vmmemwsl", "wsl.exe", "wslhost.exe"}
+
+_CMDLINE_SIGMA_RULES: List[Tuple[str, re.Pattern]] = [
+    ("stratum_uri", re.compile(r"stratum(?:2)?\+(?:tcp|ssl|udp)://", re.IGNORECASE)),
+    (
+        "miner_cli_flags",
+        re.compile(
+            r"(?:^|\s)(?:--donate-level(?:=|\s)|--cpu-max-threads-pct(?:=|\s)|--pause-on-active|"
+            r"--randomx-[a-z-]+|--rig-id(?:=|\s)|-a\s+(?:rx/0|rx/wow|cn/\S+|randomx|cryptonight|kawpow|etchash|ghostrider))",
+            re.IGNORECASE,
+        ),
+    ),
+    ("monero_wallet_cli", re.compile(r"(?:^|[\s=:\"'])(4[0-9AB][1-9A-HJ-NP-Za-km-z]{93})(?:$|[\s\"'])")),
+    (
+        "pool_host_cli",
+        re.compile(
+            r"(?:supportxmr|minexmr|moneroocean|hashvault\.pro|herominers|nanopool\.org|2miners\.com|c3pool)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "encoded_lolbin_miner",
+        re.compile(
+            r"(?:powershell|pwsh|cmd)(?:\.exe)?\b.*(?:-enc\b|-encodedcommand\b|frombase64string).*(?:xmrig|stratum|monero|randomx)",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
+
+def _analyze_cmdline(proc: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Run high-precision Sigma-style command-line inspection even on throttled processes."""
+    cmdline = str(proc.get("cmdline") or "").strip()
+    if not cmdline:
+        return False, []
+    matched = [rule_name for rule_name, pattern in _CMDLINE_SIGMA_RULES if pattern.search(cmdline)]
+    return bool(matched), matched
 
 MINER_NETWORK_PORTS = {3333, 3334, 4444, 5555, 6666, 7777, 9999, 14433, 14444}
 
@@ -657,6 +710,14 @@ EXPECTED_PUBLISHERS = {
     "winlogon.exe": "microsoft",
     "services.exe": "microsoft",
     "explorer.exe": "microsoft",
+    "dllhost.exe": "microsoft",
+    "conhost.exe": "microsoft",
+    "taskhostw.exe": "microsoft",
+    "spoolsv.exe": "microsoft",
+    "runtimebroker.exe": "microsoft",
+    "searchindexer.exe": "microsoft",
+    "sihost.exe": "microsoft",
+    "dwm.exe": "microsoft",
     "chrome.exe": "google",
     "msedge.exe": "microsoft",
     "firefox.exe": "mozilla",
@@ -672,6 +733,14 @@ EXPECTED_PATHS = {
     "winlogon.exe": ["\\windows\\system32\\winlogon.exe"],
     "services.exe": ["\\windows\\system32\\services.exe"],
     "explorer.exe": ["\\windows\\explorer.exe"],
+    "dllhost.exe": ["\\windows\\system32\\dllhost.exe", "\\windows\\syswow64\\dllhost.exe"],
+    "conhost.exe": ["\\windows\\system32\\conhost.exe"],
+    "taskhostw.exe": ["\\windows\\system32\\taskhostw.exe"],
+    "spoolsv.exe": ["\\windows\\system32\\spoolsv.exe"],
+    "runtimebroker.exe": ["\\windows\\system32\\runtimebroker.exe"],
+    "searchindexer.exe": ["\\windows\\system32\\searchindexer.exe"],
+    "sihost.exe": ["\\windows\\system32\\sihost.exe"],
+    "dwm.exe": ["\\windows\\system32\\dwm.exe"],
     "chrome.exe": ["\\google\\chrome\\"],
     "msedge.exe": ["\\microsoft\\edge\\"],
     "firefox.exe": ["\\mozilla firefox\\"],
@@ -868,6 +937,13 @@ def _check_whitelist(processes: List[dict]) -> Tuple[bool, str]:
         if spoof_eval.get("is_spoof"):
             continue
 
+        if _analyze_cmdline(proc)[0]:
+            continue
+        if _extract_static_evidence(proc)[0]:
+            continue
+        if _extract_network_evidence(proc)[0]:
+            continue
+
         policy_eval = _evaluate_policy(proc)
         if policy_eval["decision"] == "deny":
             continue
@@ -919,31 +995,36 @@ def _build_process_context(processes: List[dict], suspicious_names: List[str]) -
     if not processes:
         return []
     names_lower = {str(name or "").lower() for name in suspicious_names}
+
+    def _serialize_proc(proc: Dict[str, Any]) -> Dict[str, Any]:
+        static_data = proc.get("static_analysis") if isinstance(proc.get("static_analysis"), dict) else {}
+        net_summary = proc.get("network_summary") if isinstance(proc.get("network_summary"), dict) else {}
+        return {
+            "name": str(proc.get("name") or "unknown"),
+            "pid": proc.get("pid"),
+            "create_time": proc.get("create_time"),
+            "exe_path": proc.get("exe_path"),
+            "exe_hash": proc.get("exe_hash") or static_data.get("file_sha256"),
+            "publisher": proc.get("publisher"),
+            "signature_status": proc.get("signature_status"),
+            "cmdline": proc.get("cmdline"),
+            "cpu_percent": round(_to_float(proc.get("cpu_percent"), 0.0), 2),
+            "gpu_compute_active": bool(proc.get("gpu_compute_active")),
+            "gpu_memory_mb": round(_to_float(proc.get("gpu_memory_mb"), 0.0), 2),
+            "yara_rules": list(static_data.get("yara_rules") or [])[:4],
+            "resolved_domains": list(net_summary.get("resolved_domains") or [])[:4],
+            "remote_ips_sample": list(net_summary.get("remote_ips_sample") or [])[:4],
+            "remote_ports": list(net_summary.get("remote_ports") or [])[:6],
+        }
+
     context = []
     for proc in processes:
         name = str(proc.get("name") or "")
         if names_lower and name.lower() not in names_lower:
             continue
-        context.append(
-            {
-                "name": name,
-                "exe_path": proc.get("exe_path"),
-                "exe_hash": proc.get("exe_hash"),
-                "publisher": proc.get("publisher"),
-                "signature_status": proc.get("signature_status"),
-            }
-        )
+        context.append(_serialize_proc(proc))
     if not context:
-        context = [
-            {
-                "name": proc.get("name"),
-                "exe_path": proc.get("exe_path"),
-                "exe_hash": proc.get("exe_hash"),
-                "publisher": proc.get("publisher"),
-                "signature_status": proc.get("signature_status"),
-            }
-            for proc in processes[:5]
-        ]
+        context = [_serialize_proc(proc) for proc in processes[:5]]
     return context
 
 
@@ -955,9 +1036,11 @@ def _compute_risk_score(
     threat_intel_hits: List[Dict[str, Any]],
     miner_network_hits: List[Dict[str, Any]],
     policy_hits: List[Dict[str, Any]],
+    dynamic_evidence: Dict[str, Any] = None,
 ) -> Tuple[int, List[str]]:
     score = 0
     signals: List[str] = []
+    dyn = dynamic_evidence if isinstance(dynamic_evidence, dict) else {}
 
     if is_cryptojacking and confidence >= 0.75:
         score += 3
@@ -971,6 +1054,10 @@ def _compute_risk_score(
     if miner_network_hits:
         score += 4
         signals.append("mining_pool_traffic")
+        if any("tls_stratum_tunnel" in (h.get("indicators") or []) for h in miner_network_hits):
+            signals.append("tls_stealth_tunnel")
+        if any("dns_pool_domain_match" in (h.get("indicators") or []) for h in miner_network_hits):
+            signals.append("dns_pool_domain")
 
     if threat_intel_hits:
         score += 3
@@ -978,22 +1065,56 @@ def _compute_risk_score(
 
     unsigned_high_cpu = False
     hidden_high_cpu = False
+    cmdline_hit_any = False
+    yara_hit_any = False
+    gpu_pid_active = False
+
     for proc in processes:
         cpu = _to_float(proc.get("cpu_percent", 0))
-        if cpu < 50:
-            continue
-        signature_status = _norm_text(proc.get("signature_status"))
-        if signature_status not in {"valid"}:
-            unsigned_high_cpu = True
-        if _is_suspicious_path(_norm_text(proc.get("exe_path"))):
-            hidden_high_cpu = True
+        static_data = proc.get("static_analysis") if isinstance(proc.get("static_analysis"), dict) else {}
+        if _analyze_cmdline(proc)[0]:
+            cmdline_hit_any = True
+        if bool(static_data.get("yara_matched")):
+            yara_hit_any = True
+        if bool(proc.get("gpu_compute_active")):
+            gpu_pid_active = True
 
+        net_summary = proc.get("network_summary") if isinstance(proc.get("network_summary"), dict) else {}
+        throttled_active = cpu >= 15 and (
+            bool(miner_network_hits)
+            or bool(net_summary.get("has_pool_domain"))
+            or int(dyn.get("idle_surge_count", 0) or 0) > 0
+            or int(dyn.get("throttled_count", 0) or 0) > 0
+        )
+        if cpu >= 50 or throttled_active:
+            signature_status = _norm_text(proc.get("signature_status"))
+            if signature_status not in {"valid"}:
+                unsigned_high_cpu = True
+            if _is_suspicious_path(_norm_text(proc.get("exe_path"))):
+                hidden_high_cpu = True
+
+    if cmdline_hit_any:
+        score += 4
+        signals.append("cmdline_sigma_match")
+    if yara_hit_any:
+        score += 4
+        signals.append("yara_signature_match")
     if unsigned_high_cpu:
         score += 2
         signals.append("unsigned_high_cpu")
     if hidden_high_cpu:
         score += 3
         signals.append("hidden_path")
+
+    if int(dyn.get("idle_surge_count", 0) or 0) > 0:
+        score += 3
+        signals.append("idle_surge_miner")
+    if int(dyn.get("throttled_count", 0) or 0) > 0:
+        score += 2
+        signals.append("throttled_duty_cycle")
+    if int(dyn.get("gpu_compute_sustained_count", 0) or 0) > 0 or (gpu_pid_active and (miner_network_hits or yara_hit_any or cmdline_hit_any)):
+        score += 2
+        signals.append("gpu_compute_miner")
 
     spoof_hits = [h for h in policy_hits if h.get("decision") in {"svchost_anomaly", "spoof"}]
     if spoof_hits:
@@ -1038,6 +1159,14 @@ def _build_reason_summary(
         detail = "Rules: " + ", ".join(rule_ids) if rule_ids else "Policy deny rule matched"
         add_reason("Blacklisted process", detail)
 
+    if signal_labels and "cmdline_sigma_match" in signal_labels:
+        cmd_snippets = _compact_list([p.get("cmdline") for p in process_context if p.get("cmdline")], 2)
+        add_reason("CLI miner signature", "; ".join(s[:90] for s in cmd_snippets) or "Mining flags/pool URI in CLI")
+
+    if signal_labels and "yara_signature_match" in signal_labels:
+        rules = _compact_list([r for p in process_context for r in (p.get("yara_rules") or [])], 4)
+        add_reason("YARA miner match", ", ".join(rules) or "RandomX/XMRig bytecode rule")
+
     svchost_hits = [h for h in policy_hits if h.get("decision") == "svchost_anomaly"]
     if svchost_hits:
         add_reason("Svchost anomaly", "Unexpected path, parent, or signature")
@@ -1049,16 +1178,49 @@ def _build_reason_summary(
     if miner_network_hits:
         ports = set()
         names = []
+        domains = []
+        has_tls = False
         for hit in miner_network_hits:
             names.append(hit.get("name"))
-            for port in (hit.get("detail") or {}).get("remote_ports", []) or []:
+            hit_detail = hit.get("detail") or {}
+            for port in hit_detail.get("remote_ports", []) or []:
                 try:
                     ports.add(int(port))
                 except Exception:
                     continue
+            domains.extend(hit_detail.get("resolved_domains") or [])
+            if hit_detail.get("tls_stealth"):
+                has_tls = True
         port_text = f"Ports: {', '.join(str(p) for p in sorted(ports)[:4])}" if ports else ""
         proc_text = f"Processes: {', '.join(_compact_list(names, 3))}" if names else ""
-        add_reason("Mining pool traffic", " | ".join(t for t in (port_text, proc_text) if t))
+        domain_text = f"DNS: {', '.join(_compact_list(domains, 2))}" if domains else ""
+        label = "Stealth TLS tunnel (:443)" if has_tls and not ports else "Mining pool traffic"
+        add_reason(label, " | ".join(t for t in (port_text, domain_text, proc_text) if t) or "External pool connection")
+
+    sustained_procs = dynamic_evidence.get("sustained_processes") if isinstance(dynamic_evidence, dict) else []
+    if isinstance(sustained_procs, list):
+        for s_item in sustained_procs:
+            if s_item.get("idle_surge_detected"):
+                add_reason(
+                    "Idle-aware (AFK) surge",
+                    f"{s_item.get('process')}: {s_item.get('mean_idle_cpu', 0):.1f}% idle vs {s_item.get('mean_active_cpu', 0):.1f}% active",
+                )
+                break
+        for s_item in sustained_procs:
+            if s_item.get("throttled_sustained"):
+                add_reason(
+                    "Throttled duty cycle",
+                    f"{s_item.get('process')}: duty {int(round(float(s_item.get('duty_cycle_ratio', 0)) * 100))}% (compute/IO bound={bool(s_item.get('compute_io_bound'))})",
+                )
+                break
+
+    gpu_procs = [p for p in process_context if p.get("gpu_compute_active")]
+    if gpu_procs:
+        gpu_desc = ", ".join(
+            f"{p.get('name')} ({p.get('gpu_memory_mb', 0):.0f}MB VRAM)"
+            for p in gpu_procs[:2]
+        )
+        add_reason("Per-PID GPU compute", gpu_desc)
 
     if threat_intel_hits:
         sources = []
@@ -1126,6 +1288,11 @@ def _extract_static_evidence(proc: dict) -> Tuple[bool, List[str], Dict[str, Any
     has_mining_keywords = bool(static_data.get("has_mining_keywords")) or any(
         _contains_miner_indicator(x) for x in mining_keywords
     )
+    yara_matched = bool(static_data.get("yara_matched"))
+    yara_rules = [str(x) for x in (static_data.get("yara_rules") or []) if x]
+    yara_severity = str(static_data.get("yara_severity") or "none").lower()
+    is_packed = bool(static_data.get("is_packed"))
+
     suspicious_imports = int(static_data.get("num_suspicious_imports") or 0)
     suspicious_strings = int(static_data.get("suspicious_string_count") or 0)
     has_urls = bool(static_data.get("has_suspicious_urls"))
@@ -1134,21 +1301,29 @@ def _extract_static_evidence(proc: dict) -> Tuple[bool, List[str], Dict[str, Any
     import_cluster = suspicious_imports >= 4
     string_cluster = suspicious_strings >= 12
     artifact_combo = import_cluster and string_cluster and has_urls and has_crypto
-    static_hit = has_mining_keywords or artifact_combo
+    static_hit = has_mining_keywords or yara_matched or artifact_combo
     indicators = []
+    if yara_matched:
+        indicators.extend([f"yara:{rule}" for rule in yara_rules[:4]] or ["yara_miner_match"])
     if has_mining_keywords:
         indicators.extend(mining_keywords[:6])
+    if is_packed and static_hit:
+        indicators.append("upx_packed_miner")
     if import_cluster:
         indicators.append("suspicious_import_cluster")
     if string_cluster:
         indicators.append("suspicious_string_cluster")
-    if has_urls and (has_mining_keywords or artifact_combo):
+    if has_urls and (has_mining_keywords or yara_matched or artifact_combo):
         indicators.append("suspicious_pool_url")
-    if has_crypto and (has_mining_keywords or artifact_combo):
+    if has_crypto and (has_mining_keywords or yara_matched or artifact_combo):
         indicators.append("embedded_wallet_or_address")
 
     summary = {
         "has_mining_keywords": has_mining_keywords,
+        "yara_matched": yara_matched,
+        "yara_rules": yara_rules[:6],
+        "yara_severity": yara_severity,
+        "is_packed": is_packed,
         "suspicious_imports": suspicious_imports,
         "suspicious_string_count": suspicious_strings,
         "has_suspicious_urls": has_urls,
@@ -1174,21 +1349,46 @@ def _extract_network_evidence(proc: Dict[str, Any]) -> Tuple[bool, List[str], Di
 
     established = _int_from_any(summary.get("established_count"), 0)
     external = bool(summary.get("has_external_connection"))
+    unique_ips = _int_from_any(summary.get("unique_remote_ip_count"), 0)
     miner_ports = [p for p in ports if p in MINER_NETWORK_PORTS]
     common_service_ports = {53, 80, 123, 443, 8080, 8443}
     non_standard_ports = [p for p in ports if p not in common_service_ports]
-    high_fanout = _int_from_any(summary.get("unique_remote_ip_count"), 0) >= 8
+    high_fanout = unique_ips >= 8
     low_fanout_persistent = (
         external
         and established >= 3
-        and 1 <= _int_from_any(summary.get("unique_remote_ip_count"), 0) <= 3
+        and 1 <= unique_ips <= 3
         and bool(non_standard_ports)
     )
-    network_hit = bool(miner_ports) or low_fanout_persistent
+
+    resolved_domains = [str(d).lower() for d in (summary.get("resolved_domains") or []) if d]
+    has_pool_domain = bool(summary.get("has_pool_domain"))
+    has_tls_port = bool(summary.get("has_tls_external")) or any(p in TLS_TUNNEL_PORTS for p in ports)
+    proc_name = _normalize_proc_name(proc.get("name"))
+    sig_status = _norm_text(proc.get("signature_status"))
+    exe_path = _norm_text(proc.get("exe_path"))
+    proc_cpu = _to_float(proc.get("cpu_percent"), 0.0)
+    gpu_active = bool(proc.get("gpu_compute_active"))
+
+    tls_stealth = (
+        external
+        and established >= 1
+        and 1 <= unique_ips <= 3
+        and has_tls_port
+        and proc_name not in KNOWN_BROWSER_NAMES
+        and (sig_status != "valid" or _is_suspicious_path(exe_path))
+        and (proc_cpu >= 10.0 or gpu_active or has_pool_domain)
+    )
+
+    network_hit = bool(miner_ports) or has_pool_domain or low_fanout_persistent or tls_stealth
 
     indicators: List[str] = []
     if miner_ports:
         indicators.append("miner_port_match")
+    if has_pool_domain:
+        indicators.append("dns_pool_domain_match")
+    if tls_stealth:
+        indicators.append("tls_stratum_tunnel")
     if low_fanout_persistent:
         indicators.append("low_fanout_persistent_outbound")
     if high_fanout and miner_ports:
@@ -1196,10 +1396,15 @@ def _extract_network_evidence(proc: Dict[str, Any]) -> Tuple[bool, List[str], Di
 
     detail = {
         "remote_ports": sorted(list(set(miner_ports)))[:6],
+        "all_ports": sorted(list(set(ports)))[:8],
         "non_standard_ports": sorted(list(set(non_standard_ports)))[:6],
         "external": external,
         "established_count": established,
-        "unique_remote_ip_count": _int_from_any(summary.get("unique_remote_ip_count"), 0),
+        "unique_remote_ip_count": unique_ips,
+        "resolved_domains": resolved_domains[:6],
+        "has_pool_domain": has_pool_domain,
+        "tls_stealth": tls_stealth,
+        "remote_ips_sample": list(summary.get("remote_ips_sample") or [])[:4],
     }
     return network_hit, indicators, detail
 
@@ -1292,23 +1497,52 @@ def analyze_processes(
         spoof_eval = _detect_spoof_attempt(proc, duplicate_dirs)
         has_spoof = bool(spoof_eval.get("is_spoof"))
 
-        if proc_name in BENIGN_SYSTEM_PROCESS_NAMES and proc_name != "svchost.exe":
-            continue
-
         svchost_eval = _analyze_svchost_masquerade(proc)
         has_svchost_anomaly = bool(svchost_eval.get("is_svchost") and svchost_eval.get("suspicious"))
 
         source_text = f"{proc_name} {exe_path}".lower()
         name_or_path_indicator = _contains_miner_indicator(source_text)
+        has_cmdline_hit, cmdline_rules = _analyze_cmdline(proc)
         has_static_hit, static_indicators, static_summary = _extract_static_evidence(proc)
+        has_yara_match = bool(static_summary.get("yara_matched"))
         has_network_hit, network_indicators, network_detail = _extract_network_evidence(proc)
+        gpu_compute_active = bool(proc.get("gpu_compute_active"))
+        gpu_memory_mb = _to_float(proc.get("gpu_memory_mb"), 0.0)
+        is_wsl_vm = proc_name in WSL_HOST_PROCESS_NAMES
+
+        if proc_name in BENIGN_SYSTEM_PROCESS_NAMES and proc_name != "svchost.exe":
+            if not (
+                has_spoof
+                or deny_hit
+                or name_or_path_indicator
+                or has_cmdline_hit
+                or has_static_hit
+                or has_network_hit
+                or gpu_compute_active
+            ):
+                continue
+
         intel_result = {"known_malicious": False, "score": 0, "sources": [], "details": {}}
-        if exe_hash and (proc_cpu >= 20 or name_or_path_indicator or has_static_hit or has_network_hit):
+        if exe_hash and (
+            proc_cpu >= 20
+            or name_or_path_indicator
+            or has_cmdline_hit
+            or has_static_hit
+            or has_network_hit
+            or gpu_compute_active
+        ):
             intel_result = _lookup_threat_intel(exe_hash)
-        has_miner_indicator = name_or_path_indicator or has_static_hit or has_network_hit
+        has_miner_indicator = (
+            name_or_path_indicator
+            or has_cmdline_hit
+            or has_static_hit
+            or has_network_hit
+        )
         has_intel_hit = bool(intel_result.get("known_malicious"))
         suspicious_identity = (
             deny_hit
+            or has_cmdline_hit
+            or has_yara_match
             or has_svchost_anomaly
             or has_spoof
             or name_or_path_indicator
@@ -1319,6 +1553,8 @@ def analyze_processes(
         # Allow-rules suppress noisy legit apps only when no suspicious evidence exists.
         if allow_hit and not (
             deny_hit
+            or has_cmdline_hit
+            or has_yara_match
             or has_svchost_anomaly
             or has_spoof
             or has_miner_indicator
@@ -1330,15 +1566,25 @@ def analyze_processes(
         risk_score = 0
         if deny_hit:
             risk_score += 4
+        if has_cmdline_hit:
+            risk_score += 4
+        if has_yara_match:
+            risk_score += 4
         if has_svchost_anomaly:
             risk_score += 4
         if has_intel_hit:
             risk_score += 3
-        if has_static_hit:
+        if has_static_hit and not has_yara_match:
             risk_score += 2
         if name_or_path_indicator:
             risk_score += 2
         if has_network_hit:
+            risk_score += 2
+            if network_detail.get("remote_ports") or network_detail.get("has_pool_domain"):
+                risk_score += 2
+        if gpu_compute_active and (
+            has_network_hit or has_spoof or _is_suspicious_path(exe_path) or has_cmdline_hit or has_yara_match
+        ):
             risk_score += 2
         if proc_cpu >= 50:
             risk_score += 1
@@ -1348,7 +1594,7 @@ def analyze_processes(
         if has_spoof:
             risk_score += 3
 
-        if proc_cpu >= 35:
+        if proc_cpu >= 35 and not is_wsl_vm:
             high_cpu_non_system.append(
                 {
                     "name": proc.get("name", "unknown"),
@@ -1378,21 +1624,31 @@ def analyze_processes(
                 }
             )
 
-        should_mark_suspicious = (risk_score >= 4) or (
-            proc_cpu >= 55 and (suspicious_identity or has_network_hit)
-        )
+        # For WSL2 host VMs (vmmem), require corroborating miner network/CLI/GPU+network evidence.
+        if is_wsl_vm and not (has_network_hit or has_cmdline_hit or has_yara_match or has_intel_hit):
+            should_mark_suspicious = False
+        else:
+            should_mark_suspicious = (risk_score >= 4) or (
+                proc_cpu >= 55 and (suspicious_identity or has_network_hit)
+            )
 
         if should_mark_suspicious:
             miner_indicators.append(proc.get("name", "unknown"))
             evidence = []
             if name_or_path_indicator:
                 evidence.append("miner_keyword_or_pool_match")
+            if has_cmdline_hit:
+                evidence.extend([f"cmdline:{r}" for r in cmdline_rules[:3]])
+            if has_yara_match:
+                evidence.extend([f"yara:{r}" for r in (static_summary.get("yara_rules") or [])[:3]])
             if has_static_hit:
                 evidence.append("static_analysis_match")
             if has_intel_hit:
                 evidence.append("threat_intel_match")
             if has_network_hit:
                 evidence.append("miner_network_match")
+            if gpu_compute_active:
+                evidence.append("gpu_compute_pid")
             if deny_hit:
                 evidence.append(f"policy_deny:{policy_eval.get('rule_id')}")
             if allow_hit:
@@ -1404,8 +1660,16 @@ def analyze_processes(
 
             suspicious_item = {
                 "name": proc.get("name", "unknown"),
+                "pid": proc.get("pid"),
+                "create_time": proc.get("create_time"),
                 "cpu": proc_cpu,
                 "memory": proc_memory,
+                "cmdline": proc.get("cmdline"),
+                "gpu_compute_active": gpu_compute_active,
+                "gpu_memory_mb": round(gpu_memory_mb, 2),
+                "yara_rules": list(static_summary.get("yara_rules") or [])[:4],
+                "cmdline_rules": cmdline_rules,
+                "is_wsl_vm": is_wsl_vm,
                 "evidence": ",".join(evidence) if evidence else "miner_signal",
                 "vt_result": intel_result.get("details", {}).get("virustotal"),
                 "intel_sources": intel_result.get("sources", []),
@@ -1520,9 +1784,22 @@ def _should_emit_alert(
     if network_signal and confidence >= 0.75:
         return True
 
+    dynamic_score = int(dynamic_evidence.get("dynamic_score", 0) or 0)
+    evasion_triggered = (
+        int(dynamic_evidence.get("idle_surge_count", 0) or 0) >= 1
+        or int(dynamic_evidence.get("throttled_count", 0) or 0) >= 1
+        or int(dynamic_evidence.get("gpu_compute_sustained_count", 0) or 0) >= 1
+    )
+    if (
+        confidence >= 0.75
+        and evasion_triggered
+        and dynamic_score >= 3
+        and (network_signal or int(dynamic_evidence.get("persistent_tls_count", 0) or 0) >= 1)
+    ):
+        return True
+
     # Dynamic fallback for unknown miners.
     heavy_non_system = sum(1 for p in high_cpu_non_system if p["cpu"] >= 50)
-    dynamic_score = int(dynamic_evidence.get("dynamic_score", 0) or 0)
     miner_like_network_count = int(dynamic_evidence.get("miner_like_network_count", 0) or 0)
     return (
         confidence >= 0.80
@@ -1609,6 +1886,8 @@ def perform_ml_inference(
         policy_hits,
     ) = analyze_processes(processes)
     now = _safe_parse_timestamp(metrics.get("timestamp"))
+    activity_block = metrics.get("activity") if isinstance(metrics.get("activity"), dict) else {}
+    user_idle_seconds = _to_float(activity_block.get("user_idle_seconds"), 0.0)
     dynamic_evidence = {}
     if _behavior_monitor is not None:
         try:
@@ -1618,9 +1897,47 @@ def perform_ml_inference(
                 now=now,
                 cpu_percent=cpu_percent,
                 memory_percent=memory_percent,
+                user_idle_seconds=user_idle_seconds,
             )
         except Exception as dyn_err:
             print(f"Dynamic behavior evaluation error: {dyn_err}")
+
+    gpu_block = metrics.get("gpu") if isinstance(metrics.get("gpu"), dict) else {}
+    gpu_util = _to_float(
+        gpu_block.get("utilization_percent", gpu_block.get("engine_utilization_percent", 0.0))
+    )
+    max_non_sys_cpu = max(
+        (p.get("cpu", 0.0) for p in high_cpu_non_system),
+        default=0.0,
+    )
+    evasion_dynamic = bool(
+        int(dynamic_evidence.get("idle_surge_count", 0) or 0) > 0
+        or int(dynamic_evidence.get("throttled_count", 0) or 0) > 0
+        or int(dynamic_evidence.get("gpu_compute_sustained_count", 0) or 0) > 0
+    )
+    network_or_tls = bool(
+        miner_network_hits
+        or int(dynamic_evidence.get("persistent_tls_count", 0) or 0) > 0
+        or int(dynamic_evidence.get("pool_domain_count", 0) or 0) > 0
+    )
+    strong_miner_signal = bool(
+        suspicious_procs
+        or miner_indicators
+        or threat_intel_hits
+        or miner_network_hits
+        or any(h.get("decision") == "deny" for h in policy_hits)
+        or (evasion_dynamic and network_or_tls)
+    )
+    has_yara_or_cmdline = any(
+        bool((p.get("static_analysis") or {}).get("yara_matched")) or _analyze_cmdline(p)[0]
+        for p in processes
+    )
+    has_gpu_pid = any(bool(p.get("gpu_compute_active")) for p in processes)
+    throttled_or_evasive_hit = bool(
+        strong_miner_signal
+        and (evasion_dynamic or has_yara_or_cmdline or bool(miner_network_hits) or has_gpu_pid)
+        and (cpu_percent >= 10.0 or gpu_util >= 20.0 or has_gpu_pid or has_yara_or_cmdline)
+    )
 
     if MODEL_LOADED and feature_names:
         try:
@@ -1665,20 +1982,6 @@ def perform_ml_inference(
                     adj_logit = raw_logit - uncollected_logit
                     confidence = float(1.0 / (1.0 + np.exp(-np.clip(adj_logit, -20.0, 20.0))))
 
-                gpu_block = metrics.get("gpu") if isinstance(metrics.get("gpu"), dict) else {}
-                gpu_util = _to_float(
-                    gpu_block.get("utilization_percent", gpu_block.get("engine_utilization_percent", 0.0))
-                )
-                max_non_sys_cpu = max(
-                    (p.get("cpu", 0.0) for p in high_cpu_non_system),
-                    default=0.0,
-                )
-                strong_miner_signal = bool(
-                    suspicious_procs
-                    or miner_indicators
-                    or threat_intel_hits
-                    or any(h.get("decision") == "deny" for h in policy_hits)
-                )
                 has_compute_pressure = (
                     cpu_percent >= 55.0
                     or gpu_util >= 50.0
@@ -1689,7 +1992,11 @@ def perform_ml_inference(
                     if confidence >= 0.50:
                         confidence = min(confidence * 0.45, 0.42)
                     is_cryptojacking = False
-                elif cpu_percent >= 90.0 or ((cpu_percent >= 65.0 or gpu_util >= 80.0) and strong_miner_signal):
+                elif (
+                    cpu_percent >= 90.0
+                    or ((cpu_percent >= 65.0 or gpu_util >= 80.0) and strong_miner_signal)
+                    or throttled_or_evasive_hit
+                ):
                     confidence = max(
                         confidence,
                         0.85 if strong_miner_signal or memory_percent >= 60.0 else 0.82,
@@ -1700,6 +2007,9 @@ def perform_ml_inference(
 
                 feat_importance = shap_map if is_cryptojacking else {}
             else:
+                if throttled_or_evasive_hit:
+                    confidence = max(confidence, 0.84)
+                    is_cryptojacking = True
                 feat_importance = _compute_shap_importance(model_input, raw_row) if is_cryptojacking else {}
             return (
                 is_cryptojacking,
@@ -1718,8 +2028,8 @@ def perform_ml_inference(
             print(f"ML inference error: {err}")
 
     # Heuristic fallback detection when the ML model is offline.
-    heuristic_hit = cpu_percent >= 90 or memory_percent >= 80
-    heuristic_conf = 0.80 if heuristic_hit else 0.0
+    heuristic_hit = cpu_percent >= 90 or memory_percent >= 80 or throttled_or_evasive_hit
+    heuristic_conf = 0.85 if throttled_or_evasive_hit else (0.80 if heuristic_hit else 0.0)
     return (
         heuristic_hit,
         heuristic_conf,
@@ -1825,6 +2135,7 @@ async def receive_metrics_batch(
             threat_intel_hits=threat_intel_hits,
             miner_network_hits=miner_network_hits,
             policy_hits=policy_hits,
+            dynamic_evidence=dynamic_evidence,
         )
         has_blacklist_hit = any(h.get("decision") == "deny" for h in policy_hits)
         candidate_alert = _should_emit_alert(
@@ -1947,6 +2258,30 @@ async def receive_metrics_batch(
         system.status = "online"
         system.last_seen = datetime.utcnow()
 
+    pending_commands_payload: List[Dict[str, Any]] = []
+    try:
+        from backend.models.agent_command import AgentCommand
+
+        raw_pending = (
+            db.query(AgentCommand)
+            .filter(
+                AgentCommand.system_id == batch.system_id,
+                AgentCommand.status == "pending",
+            )
+            .order_by(AgentCommand.created_at.asc())
+            .limit(5)
+            .all()
+        )
+        if isinstance(raw_pending, list):
+            now_dispatch = datetime.utcnow()
+            for cmd in raw_pending:
+                if isinstance(getattr(cmd, "id", None), int) and hasattr(cmd, "to_dict"):
+                    cmd.status = "dispatched"
+                    cmd.updated_at = now_dispatch
+                    pending_commands_payload.append(cmd.to_dict())
+    except Exception as cmd_err:
+        print(f"Pending command fetch warning: {cmd_err}")
+
     db.commit()
 
     return {
@@ -1954,6 +2289,7 @@ async def receive_metrics_batch(
         "metrics_received": len(batch.metrics),
         "model_used": MODEL_NAME if MODEL_LOADED else "heuristic",
         "alerts": alerts_generated,
+        "pending_commands": pending_commands_payload,
     }
 
 

@@ -38,7 +38,7 @@ def get_db():
 
 def init_db():
     """Create all tables on startup and apply lightweight compatibility migrations."""
-    from backend.models import alert, metric, report, system, user  # noqa
+    from backend.models import agent_command, alert, audit_log, metric, notification_channel, report, system, user  # noqa
 
     if _is_sqlite:
         print(f"Database: {_db_path}")

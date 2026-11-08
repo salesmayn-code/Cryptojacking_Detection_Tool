@@ -90,6 +90,7 @@ test_report.html
 /tools/xmrig-safe-lab/README.md
 
 # agent build artifacts
+*.exe
 /monitoring_agent/build/
 /monitoring_agent/dist/
 /monitoring_agent/__pycache__/

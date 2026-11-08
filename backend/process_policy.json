@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "allow_rules": [
     {
       "id": "generic-signed-program-files",
@@ -62,12 +62,19 @@
       "publisher_contains": ["adobe"],
       "signature_status_exact": ["valid"],
       "min_match_count": 2
+    },
+    {
+      "id": "7zip-legit",
+      "name_exact": ["7z.exe", "7zg.exe", "7zfm.exe"],
+      "path_contains": ["\\7-zip\\"],
+      "signature_status_exact": ["valid"],
+      "min_match_count": 2
     }
   ],
   "deny_rules": [
     {
       "id": "known-miner-process-names",
-      "name_contains": ["xmrig", "xmrig-notls", "xmr-stak", "cpuminer", "minerd", "ethminer", "nbminer", "lolminer", "trex", "t-rex"],
+      "name_contains": ["xmrig", "xmrig-notls", "xmr-stak", "cpuminer", "minerd", "ethminer", "nbminer", "lolminer", "trex", "t-rex", "gminer", "phoenixminer", "teamredminer", "nanominer"],
       "min_match_count": 1
     },
     {
@@ -80,5 +87,15 @@
     "expected_path_contains": ["\\windows\\system32\\svchost.exe", "\\windows\\syswow64\\svchost.exe"],
     "expected_parent_names": ["services.exe", "wininit.exe"],
     "trusted_publishers_contains": ["microsoft"]
+  },
+  "masquerade_targets": {
+    "dllhost.exe": ["\\windows\\system32\\dllhost.exe", "\\windows\\syswow64\\dllhost.exe"],
+    "conhost.exe": ["\\windows\\system32\\conhost.exe"],
+    "taskhostw.exe": ["\\windows\\system32\\taskhostw.exe"],
+    "spoolsv.exe": ["\\windows\\system32\\spoolsv.exe"],
+    "runtimebroker.exe": ["\\windows\\system32\\runtimebroker.exe"],
+    "searchindexer.exe": ["\\windows\\system32\\searchindexer.exe"],
+    "sihost.exe": ["\\windows\\system32\\sihost.exe"],
+    "dwm.exe": ["\\windows\\system32\\dwm.exe"]
   }
 }

@@ -1,9 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
-import { alertsAPI } from '../../services/api';
+import { alertsAPI, systemsAPI } from '../../services/api';
 import TelemetryTooltip from '../common/TelemetryTooltip';
 import './Alerts.css';
+
+const ACTION_LABELS = {
+    suspend_process: 'Suspend Process',
+    resume_process: 'Resume Process',
+    kill_process_tree: 'Kill Process Tree',
+    quarantine_binary: 'Quarantine Binary',
+    block_ip: 'Block Pool IP',
+    audit_persistence: 'Scan Persistence',
+};
+
+const DESTRUCTIVE_ACTIONS = new Set(['kill_process_tree', 'quarantine_binary', 'block_ip']);
 
 const AlertsPage = () => {
     const [alerts, setAlerts] = useState([]);
@@ -17,6 +28,9 @@ const AlertsPage = () => {
     const [expandedAlertId, setExpandedAlertId] = useState(null);
     const [confirmDeleteId, setConfirmDeleteId] = useState(null);
     const [whitelistModal, setWhitelistModal] = useState(null);
+    const [actionStateByAlert, setActionStateByAlert] = useState({});
+    const [selectedTargetByAlert, setSelectedTargetByAlert] = useState({});
+    const [confirmContainment, setConfirmContainment] = useState(null);
 
     const prevUnreadCountRef = useRef(0);
     const hasAnimatedPieRef = useRef(false);
@@ -27,6 +41,14 @@ const AlertsPage = () => {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        if (!expandedAlertId) return undefined;
+        fetchAlertActions(expandedAlertId);
+        const pollTimer = setInterval(() => fetchAlertActions(expandedAlertId), 4000);
+        return () => clearInterval(pollTimer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [expandedAlertId]);
 
     useEffect(() => {
         applyFilters();
@@ -199,6 +221,125 @@ const AlertsPage = () => {
             setAlerts(prevAlerts);
             setToast({ title: 'Delete failed', message: 'Unable to delete this alert.' });
         }
+    };
+
+    const fetchAlertActions = async (alertId) => {
+        if (!alertId) return;
+        try {
+            const res = await alertsAPI.getActions(alertId);
+            setActionStateByAlert((prev) => ({
+                ...prev,
+                [alertId]: {
+                    ...(prev[alertId] || {}),
+                    commands: res.data?.commands || [],
+                    latestPersistence: res.data?.latest_persistence_audit || null,
+                },
+            }));
+        } catch (error) {
+            console.error('Error fetching containment actions:', error);
+        }
+    };
+
+    const getAlertTargets = (alert) => {
+        const ctx = Array.isArray(alert.metrics?.process_context) ? alert.metrics.process_context : [];
+        if (ctx.length > 0) return ctx;
+        const fallbackNames = Array.isArray(alert.suspicious_processes) ? alert.suspicious_processes : [];
+        return fallbackNames.map((name) => ({ name }));
+    };
+
+    const getActiveTargetForAlert = (alert) => {
+        const targets = getAlertTargets(alert);
+        if (targets.length === 0) return null;
+        const selectedIdx = Number(selectedTargetByAlert[alert.alert_id] ?? 0);
+        return targets[selectedIdx] || targets[0];
+    };
+
+    const executeContainmentAction = async (alert, action, targetOverride = null) => {
+        const alertId = alert.alert_id;
+        setConfirmContainment(null);
+        setActionStateByAlert((prev) => ({
+            ...prev,
+            [alertId]: { ...(prev[alertId] || {}), busyAction: action },
+        }));
+
+        try {
+            if (action === 'audit_persistence') {
+                await systemsAPI.auditPersistence(alert.system_id);
+                setToast({
+                    title: 'Persistence scan queued',
+                    message: `${alert.system_id} will inspect Scheduled Tasks, Run keys, Services, and WSL2 on next heartbeat.`,
+                });
+            } else {
+                const target = targetOverride || getActiveTargetForAlert(alert) || {};
+                const remoteIp = Array.isArray(target.remote_ips_sample) ? target.remote_ips_sample[0] : undefined;
+                await alertsAPI.dispatchAction(alertId, {
+                    action,
+                    pid: target.pid ?? undefined,
+                    create_time: target.create_time ?? undefined,
+                    process_name: target.name ?? undefined,
+                    exe_path: target.exe_path ?? undefined,
+                    exe_hash: target.exe_hash ?? undefined,
+                    remote_ip: remoteIp,
+                });
+                setToast({
+                    title: `${ACTION_LABELS[action] || action} queued`,
+                    message: `Command dispatched to ${alert.system_id} for ${target.name || remoteIp || 'target'}.`,
+                });
+            }
+            await fetchAlertActions(alertId);
+        } catch (error) {
+            const detail = error?.response?.data?.detail || 'Containment request rejected or endpoint unauthorized.';
+            setToast({
+                title: `${ACTION_LABELS[action] || 'Action'} blocked`,
+                message: String(detail),
+            });
+        } finally {
+            setActionStateByAlert((prev) => ({
+                ...prev,
+                [alertId]: { ...(prev[alertId] || {}), busyAction: null },
+            }));
+        }
+    };
+
+    const handleContainmentTrigger = (alert, action) => {
+        const target = getActiveTargetForAlert(alert) || {};
+        if (DESTRUCTIVE_ACTIONS.has(action)) {
+            setConfirmContainment({ alertId: alert.alert_id, action, target });
+            return;
+        }
+        executeContainmentAction(alert, action, target);
+    };
+
+    const formatCommandOutcome = (cmd) => {
+        if (!cmd) return '';
+        if (cmd.error_message) return cmd.error_message;
+        const data = cmd.result_data || {};
+        const qPath = data.quarantined_path || data.quarantine_path;
+        if (cmd.action === 'quarantine_binary' && qPath) {
+            return `Isolated to ${qPath} (${String(data.sha256 || '').slice(0, 12)}...)`;
+        }
+        const killedChildren = data.killed_children ?? data.terminated_children;
+        if (cmd.action === 'kill_process_tree' && Number.isFinite(killedChildren)) {
+            return `Terminated PID ${data.pid ?? '?'} + ${killedChildren} child process(es)`;
+        }
+        if (cmd.action === 'block_ip' && data.blocked_ip) {
+            return `Firewall rule ${data.rule_name || ''} blocking ${data.blocked_ip}`;
+        }
+        if (cmd.action === 'suspend_process' && data.pid) {
+            return `Suspended PID ${data.pid} (memory preserved for forensics)`;
+        }
+        if (cmd.action === 'resume_process' && data.pid) {
+            return `Resumed PID ${data.pid}`;
+        }
+        if (cmd.action === 'audit_persistence' && data.counts) {
+            const totalFlagged = Array.isArray(data.suspicious_entries) ? data.suspicious_entries.length : 0;
+            return `${totalFlagged} suspicious persistence artifact(s) found`;
+        }
+        return cmd.status === 'pending'
+            ? 'Waiting for endpoint agent heartbeat'
+            : cmd.status === 'dispatched'
+                ? 'Delivered to endpoint agent; awaiting execution report'
+                : 'Executed';
     };
 
     const getAlertLabel = (alertType) => {
@@ -736,17 +877,49 @@ const AlertsPage = () => {
                                                                         <table>
                                                                             <thead>
                                                                                 <tr>
-                                                                                    <th>Process</th>
-                                                                                    <th>Executable Path</th>
-                                                                                    <th>Authenticode Status</th>
+                                                                                    <th>Process &amp; PID</th>
+                                                                                    <th>Executable Path &amp; CLI</th>
+                                                                                    <th>Signals &amp; Signatures</th>
                                                                                 </tr>
                                                                             </thead>
                                                                             <tbody>
                                                                                 {alert.metrics.process_context.slice(0, 4).map((proc, i) => (
                                                                                     <tr key={i}>
-                                                                                        <td><code>{proc?.name || 'unknown'}</code></td>
-                                                                                        <td className="reason-path">{proc?.exe_path || 'N/A'}</td>
-                                                                                        <td className="reason-signature">{proc?.signature_status || 'unknown'}</td>
+                                                                                        <td>
+                                                                                            <div className="proc-id-cell">
+                                                                                                <code>{proc?.name || 'unknown'}</code>
+                                                                                                {proc?.pid !== null && proc?.pid !== undefined && (
+                                                                                                    <span className="forensic-meta tabular-nums">PID {proc.pid}</span>
+                                                                                                )}
+                                                                                                {proc?.gpu_compute_active && (
+                                                                                                    <span className="forensic-tag forensic-tag-warn tabular-nums">
+                                                                                                        GPU {(Number(proc.gpu_memory_mb) || 0).toFixed(0)}MB
+                                                                                                    </span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        </td>
+                                                                                        <td>
+                                                                                            <div className="reason-path" title={proc?.exe_path || ''}>{proc?.exe_path || 'N/A'}</div>
+                                                                                            {proc?.cmdline && (
+                                                                                                <div className="reason-cmdline" title={proc.cmdline}>
+                                                                                                    <code>{proc.cmdline}</code>
+                                                                                                </div>
+                                                                                            )}
+                                                                                        </td>
+                                                                                        <td>
+                                                                                            <div className="forensic-badges">
+                                                                                                <span className="reason-signature">{proc?.signature_status || 'unknown'}</span>
+                                                                                                {Array.isArray(proc?.yara_rules) && proc.yara_rules.map((rule, rIdx) => (
+                                                                                                    <span key={rIdx} className="forensic-tag forensic-tag-danger">YARA:{rule}</span>
+                                                                                                ))}
+                                                                                                {Array.isArray(proc?.resolved_domains) && proc.resolved_domains.slice(0, 2).map((dom, dIdx) => (
+                                                                                                    <span key={dIdx} className="forensic-tag forensic-tag-info">{dom}</span>
+                                                                                                ))}
+                                                                                                {Array.isArray(proc?.remote_ips_sample) && proc.remote_ips_sample.slice(0, 1).map((ip, ipIdx) => (
+                                                                                                    <span key={ipIdx} className="forensic-meta tabular-nums">{ip}</span>
+                                                                                                ))}
+                                                                                            </div>
+                                                                                        </td>
                                                                                     </tr>
                                                                                 ))}
                                                                             </tbody>
@@ -754,6 +927,208 @@ const AlertsPage = () => {
                                                                     </div>
                                                                 )}
                                                             </div>
+
+                                                            {(() => {
+                                                                const targets = getAlertTargets(alert);
+                                                                const selectedIdx = Number(selectedTargetByAlert[alert.alert_id] ?? 0);
+                                                                const activeTarget = targets[selectedIdx] || targets[0] || {};
+                                                                const alertActionState = actionStateByAlert[alert.alert_id] || {};
+                                                                const commands = alertActionState.commands || [];
+                                                                const latestPersistence = alertActionState.latestPersistence || null;
+                                                                const busyAction = alertActionState.busyAction;
+                                                                const isConfirming = confirmContainment?.alertId === alert.alert_id;
+                                                                const hasRemoteIp = Array.isArray(activeTarget.remote_ips_sample) && activeTarget.remote_ips_sample.length > 0;
+                                                                const hasPidTarget = activeTarget.pid !== null && activeTarget.pid !== undefined;
+                                                                const hasExePath = Boolean(activeTarget.exe_path);
+
+                                                                return (
+                                                                    <div className="containment-panel">
+                                                                        <div className="containment-header">
+                                                                            <div>
+                                                                                <h4 className="containment-title">Active SOC Containment &amp; Eradication Queue</h4>
+                                                                                <p className="containment-subtitle">
+                                                                                    Signed operator directives dispatched to <code>{alert.system_id}</code> with PID create-time verification.
+                                                                                </p>
+                                                                            </div>
+                                                                            <div className="containment-header-controls">
+                                                                                {targets.length > 1 && (
+                                                                                    <select
+                                                                                        aria-label="Target process"
+                                                                                        className="form-input containment-select"
+                                                                                        value={selectedIdx}
+                                                                                        onChange={(e) =>
+                                                                                            setSelectedTargetByAlert((prev) => ({
+                                                                                                ...prev,
+                                                                                                [alert.alert_id]: Number(e.target.value),
+                                                                                            }))
+                                                                                        }
+                                                                                    >
+                                                                                        {targets.map((t, tIdx) => (
+                                                                                            <option key={tIdx} value={tIdx}>
+                                                                                                {t.name || 'process'} {t.pid ? `(PID ${t.pid})` : ''}
+                                                                                            </option>
+                                                                                        ))}
+                                                                                    </select>
+                                                                                )}
+                                                                                <button
+                                                                                    type="button"
+                                                                                    className="btn btn-xs btn-secondary"
+                                                                                    disabled={Boolean(busyAction)}
+                                                                                    onClick={() => executeContainmentAction(alert, 'audit_persistence')}
+                                                                                >
+                                                                                    Scan Persistence
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    className="btn btn-xs btn-ghost"
+                                                                                    onClick={() => fetchAlertActions(alert.alert_id)}
+                                                                                    aria-label="Refresh containment queue"
+                                                                                >
+                                                                                    Refresh
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        <div className="containment-actions-bar">
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-xs btn-secondary"
+                                                                                disabled={Boolean(busyAction) || !hasPidTarget}
+                                                                                title={hasPidTarget ? 'Freeze threads to preserve memory forensics' : 'PID unavailable'}
+                                                                                onClick={() => handleContainmentTrigger(alert, 'suspend_process')}
+                                                                            >
+                                                                                Suspend Process
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-xs btn-secondary"
+                                                                                disabled={Boolean(busyAction) || !hasPidTarget}
+                                                                                title={hasPidTarget ? 'Resume suspended process' : 'PID unavailable'}
+                                                                                onClick={() => handleContainmentTrigger(alert, 'resume_process')}
+                                                                            >
+                                                                                Resume Process
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-xs btn-danger-subtle"
+                                                                                disabled={Boolean(busyAction) || !hasPidTarget}
+                                                                                title={hasPidTarget ? 'Terminate target PID and child watchdogs' : 'PID unavailable'}
+                                                                                onClick={() => handleContainmentTrigger(alert, 'kill_process_tree')}
+                                                                            >
+                                                                                Kill Process Tree
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-xs btn-danger-subtle"
+                                                                                disabled={Boolean(busyAction) || !hasExePath}
+                                                                                title={hasExePath ? `Quarantine ${activeTarget.exe_path}` : 'Executable path unavailable'}
+                                                                                onClick={() => handleContainmentTrigger(alert, 'quarantine_binary')}
+                                                                            >
+                                                                                Quarantine Binary
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-xs btn-danger-subtle"
+                                                                                disabled={Boolean(busyAction) || !hasRemoteIp}
+                                                                                title={hasRemoteIp ? `Block outbound traffic to ${activeTarget.remote_ips_sample[0]}` : 'No external remote IP captured'}
+                                                                                onClick={() => handleContainmentTrigger(alert, 'block_ip')}
+                                                                            >
+                                                                                Block Pool IP
+                                                                            </button>
+                                                                        </div>
+
+                                                                        {isConfirming && (
+                                                                            <div className="containment-confirm" role="alert">
+                                                                                <div className="containment-confirm-copy">
+                                                                                    <strong>Confirm {ACTION_LABELS[confirmContainment.action]}</strong>
+                                                                                    <span className="tabular-nums">
+                                                                                        Target: <code>{confirmContainment.target?.name || 'endpoint'}</code>
+                                                                                        {confirmContainment.target?.pid ? ` · PID ${confirmContainment.target.pid}` : ''}
+                                                                                        {confirmContainment.action === 'quarantine_binary' && confirmContainment.target?.exe_path
+                                                                                            ? ` · ${confirmContainment.target.exe_path}`
+                                                                                            : ''}
+                                                                                        {confirmContainment.action === 'block_ip' && confirmContainment.target?.remote_ips_sample?.[0]
+                                                                                            ? ` · IP ${confirmContainment.target.remote_ips_sample[0]}`
+                                                                                            : ''}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <div className="containment-confirm-btns">
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        className="btn btn-xs btn-danger"
+                                                                                        onClick={() =>
+                                                                                            executeContainmentAction(
+                                                                                                alert,
+                                                                                                confirmContainment.action,
+                                                                                                confirmContainment.target
+                                                                                            )
+                                                                                        }
+                                                                                    >
+                                                                                        Execute
+                                                                                    </button>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        className="btn btn-xs btn-secondary"
+                                                                                        onClick={() => setConfirmContainment(null)}
+                                                                                    >
+                                                                                        Cancel
+                                                                                    </button>
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+
+                                                                        {commands.length > 0 && (
+                                                                            <div className="containment-history">
+                                                                                <div className="containment-subhead">Command Audit Trail</div>
+                                                                                <div className="containment-cmd-list">
+                                                                                    {commands.slice(0, 5).map((cmd) => (
+                                                                                        <div key={cmd.command_id} className="containment-cmd-row">
+                                                                                            <div className="containment-cmd-main">
+                                                                                                <span className={`cmd-status-pill cmd-status-${cmd.status}`}>
+                                                                                                    {cmd.status}
+                                                                                                </span>
+                                                                                                <strong>{ACTION_LABELS[cmd.action] || cmd.action}</strong>
+                                                                                                <span className="containment-cmd-detail">{formatCommandOutcome(cmd)}</span>
+                                                                                            </div>
+                                                                                            <span className="containment-cmd-time tabular-nums">
+                                                                                                {cmd.created_at ? new Date(cmd.created_at).toLocaleTimeString() : ''}
+                                                                                            </span>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+
+                                                                        {latestPersistence?.result_data && (
+                                                                            <div className="persistence-audit-box">
+                                                                                <div className="containment-subhead">
+                                                                                    Latest Persistence Audit ({latestPersistence.completed_at ? new Date(latestPersistence.completed_at).toLocaleString() : 'completed'})
+                                                                                </div>
+                                                                                <div className="persistence-counts tabular-nums">
+                                                                                    <span>Run Keys: {latestPersistence.result_data.counts?.registry_run ?? 0}</span>
+                                                                                    <span>Scheduled Tasks: {latestPersistence.result_data.counts?.scheduled_tasks ?? 0}</span>
+                                                                                    <span>Non-System Services: {latestPersistence.result_data.counts?.non_system_services ?? 0}</span>
+                                                                                    <span>Startup Items: {latestPersistence.result_data.counts?.startup_items ?? 0}</span>
+                                                                                    <span>Running WSL2: {latestPersistence.result_data.counts?.wsl_running_distros ?? 0}</span>
+                                                                                </div>
+                                                                                {Array.isArray(latestPersistence.result_data.suspicious_entries) && latestPersistence.result_data.suspicious_entries.length > 0 ? (
+                                                                                    <div className="persistence-findings">
+                                                                                        {latestPersistence.result_data.suspicious_entries.slice(0, 5).map((entry, eIdx) => (
+                                                                                            <div key={eIdx} className="persistence-finding-row">
+                                                                                                <span className="forensic-tag forensic-tag-danger">{entry.category}</span>
+                                                                                                <code>{entry.name}</code>
+                                                                                                <span className="persistence-loc">{entry.location}</span>
+                                                                                            </div>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    <p className="persistence-clean">No suspicious persistence entries flagged on latest scan.</p>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })()}
 
                                                             <div className="shap-header-row">
                                                                 <h4 className="shap-title">

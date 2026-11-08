@@ -41,9 +41,10 @@ React dashboard (Create React App)
 
 Supporting pipelines:
 
-- `static_analysis/` — PE inspection, string extraction, and feature building
-  for executable samples.
-- `dynamic_analysis/` — runtime behavior monitoring.
+- `static_analysis/` — PE inspection, string extraction, YARA miner/packer signatures
+  (`yara_scanner.py`), and feature building for executable samples.
+- `dynamic_analysis/` — 24-sample runtime behavior monitoring for throttled duty cycles,
+  idle-surge evasion, persistent TLS sockets, and GPU compute activity.
 - `data_collection/` — VirusTotal and MalwareBazaar clients plus sample
   management for dataset assembly.
 
@@ -52,12 +53,17 @@ Supporting pipelines:
 ### Monitoring agent
 
 `monitoring_agent/agent.py` starts the agent implemented in `enhanced_agent.py`.
-It samples CPU, GPU, memory, network, and process metrics every 5 seconds, keeps
-a local cache of 60 entries, uploads a batch every 30 seconds, and sends a
-heartbeat every 10 seconds. Samples stay queued on disk until the backend
-confirms them, so failed uploads are retried with the next batch; during an
-outage the newest 60 samples are kept. `agent_gui.py`, `build_exe.py`, and the auto-updater
-provide the packaged Windows agent experience.
+It samples CPU, per-PID NVML GPU compute, memory, network (including DNS Client
+cache pool correlation and TLS port tracking), Win32 `GetLastInputInfo` idle
+duration, sanitized process command lines, and process snapshots every 5 seconds.
+It keeps a local cache of 60 entries, uploads a batch every 30 seconds, sends a
+heartbeat every 10 seconds, and executes operator-approved containment and
+persistence-audit commands (`suspend_process`, `resume_process`,
+`kill_process_tree`, `quarantine_binary`, `block_ip`, and `audit_persistence`)
+returned by the backend. Samples stay queued on disk until the backend confirms
+them; during an outage the newest 60 samples are kept. `agent_gui.py`,
+`build_exe.py`, and the auto-updater provide the single-instance packaged
+Windows tray experience.
 
 ### API backend
 
@@ -66,13 +72,13 @@ FastAPI application (`backend/main.py`) with routers for:
 | Router | Responsibility |
 |---|---|
 | `/api/auth` | Registration, login, JWT issuance, profile and password changes |
-| `/api/systems` | Monitored-system registration, agent validation, heartbeats |
-| `/api/metrics` | Metric ingestion and retrieval |
-| `/api/alerts` | Alert listing, acknowledgement, and feature-importance details |
+| `/api/systems` | Monitored-system registration, agent validation, heartbeats, persistence audits |
+| `/api/metrics` | Metric ingestion, evasion-resilient ML/policy scoring, command dispatch |
+| `/api/alerts` | Alert listing, acknowledgement, feature importance, containment actions |
 | `/api/reports` | Report generation and download |
 | `/api/notifications` | Per-user notification channels and preferences |
 | `/api/admin` | Audit logs |
-| `/api/agent` | Agent version metadata and executable download |
+| `/api/agent` | Agent version metadata, executable download, command result callbacks |
 
 The database layer defaults to SQLite at `backend/cryptojacking.db` and accepts
 a PostgreSQL URL through `DATABASE_URL`. Alembic migrations are included.
@@ -88,13 +94,16 @@ a PostgreSQL URL through `DATABASE_URL`. Alembic migrations are included.
 - `ml_models/xgboost_model.py` trains and evaluates an XGBoost classifier.
 - `ml_models/train_all_models.py` runs preprocessing, both training jobs, and
   writes a comparison report plus model metadata.
+- `ml_models/benchmark_windows.py` evaluates naive CPU thresholds, uncalibrated
+  XGBoost, SHAP cross-OS gating, and the evasion-resilient engine across 72
+  multi-workload Windows episodes (`docs/results/results.md`).
 
 Training expects the source CSV files under `ml_models/datasets/` and writes
 artifacts to `ml_models/saved_models/`. Pre-trained lightweight artifacts are
 included under `ml_models/saved_models/` so the API runs full ML + SHAP scoring
 locally out of the box; raw dataset CSVs are excluded from version control.
-Metrics, confusion matrices, and a SHAP feature-importance plot are written to
-`docs/results/`.
+Metrics, confusion matrices, SHAP plots, and Windows workload ablation results
+are written to `docs/results/`.
 
 ### Dataset
 
@@ -126,32 +135,34 @@ alone.
 
 ### Known limitations
 
-- **Training and deployment environments differ.** The dataset comes from a
-  Linux server, while the monitoring agent runs on Windows. `cpu_iowait`,
+- **Training and deployment environments differ.** The base Kaggle dataset comes
+  from a Linux server, while the monitoring agent runs on Windows. `cpu_iowait`,
   `cpu_softirq`, `mem_active`, and `mem_cached` are 0 on Windows, and
   `load_min1`, `load_min5`, and `load_min15` are estimated from CPU usage.
+  Runtime inference mitigates this via SHAP cross-OS log-odds calibration
+  combined with Windows process, YARA, CLI, idle-correlation, DNS, and TLS
+  heuristics.
 - **Network features measure different traffic.** The dataset records loopback
-  traffic (`network_lo_*`), while the agent reports traffic across all network
-  interfaces.
-- **Machine size differs.** The dataset's per-CPU columns cover a single core.
-  One miner thread that fills that core may use only a small share of a larger
-  desktop's CPU, and memory features recorded in bytes also depend on machine
-  size.
-- **Test scores come from the dataset's environment.** They do not measure
-  detection accuracy on live Windows machines, or against legitimate
-  high-CPU workloads that the dataset may not include.
+  traffic (`network_lo_*`), while the agent reports interface counters
+  alongside per-process socket and DNS Client cache intelligence.
+- **Benchmark evaluation.** See [`docs/results/results.md`](docs/results/results.md)
+  for both the original chronological Kaggle split and the 72-episode Windows
+  multi-workload evasion ablation benchmark (`python -m ml_models.benchmark_windows`).
+  Real endpoint workloads should still be validated locally with `--collect-live`.
 
 ### Dashboard
 
 The React front end provides login and registration, user and administrator
-dashboards, live system monitoring, alert management, reports, profile and
-notification settings, and an audit-log view for administrators.
+dashboards, live system monitoring, alert management with a signed
+human-in-the-loop Active SOC Containment Queue (`Suspend`, `Kill`, `Quarantine`,
+`Block IP`, and `Scan Persistence`), reports, profile and notification
+settings, and an audit-log view for administrators.
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Agent | Python, psutil, requests, pystray, PyInstaller |
+| Agent | Python, psutil, requests, pystray, pynvml, PyInstaller |
 | Backend | FastAPI, SQLAlchemy, Alembic, Pydantic, python-jose, passlib |
 | Machine learning | scikit-learn, XGBoost, pandas, NumPy, SHAP |
 | Analysis | yara-python, pefile, BeautifulSoup |
@@ -163,14 +174,14 @@ notification settings, and an audit-log view for administrators.
 ## Repository layout
 
 ```text
-backend/                FastAPI app, models, routes, services
-monitoring_agent/       Windows telemetry agent and packaging scripts
-ml_models/              feature engineering, training, evaluation
-static_analysis/        PE and string analysis
-dynamic_analysis/       runtime behavior monitoring
+backend/                FastAPI app, models, routes, services, containment queue
+monitoring_agent/       Windows telemetry agent, containment executor, GUI/EXE build
+ml_models/              feature engineering, training, Windows benchmark & evaluation
+static_analysis/        PE inspection, string extraction, YARA miner/packer scanner
+dynamic_analysis/       multi-frame duty-cycle, AFK, TLS, and GPU behavior monitor
 data_collection/        threat-intelligence API clients and sample manager
-src/                    React dashboard
-test/                   unit, integration, performance, and system tests
+src/                    React dashboard & SOC containment UI
+test/                   unit, integration, evasion/containment, and system tests
 ```
 
 ## Getting started

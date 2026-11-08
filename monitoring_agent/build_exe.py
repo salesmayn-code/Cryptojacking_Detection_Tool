@@ -34,7 +34,7 @@ def build_exe():
     """Build Windows executable"""
 
     print("=" * 60)
-    print("  BUILDING CRYPTODETECT AGENT v9.0 .EXE")
+    print("  BUILDING CRYPTODETECT AGENT v1.0 .EXE")
     print("=" * 60)
 
     try:
@@ -55,7 +55,7 @@ def build_exe():
         "--clean",
         "--onefile",
         "--windowed",
-        "--name=CryptoDetect-Agent-v9",
+        "--name=CryptoDetect-Agent-v1",
         "--hidden-import=psutil",
         "--hidden-import=requests",
         "--hidden-import=hashlib",
@@ -71,6 +71,8 @@ def build_exe():
         "--hidden-import=static_analysis",
         "--hidden-import=static_analysis.pe_analyzer",
         "--hidden-import=static_analysis.string_extractor",
+        "--hidden-import=static_analysis.yara_scanner",
+        "--hidden-import=yara",
         "--hidden-import=pefile",
         "--hidden-import=pynvml",
         "agent_gui.py",
@@ -92,7 +94,7 @@ def build_exe():
         subprocess.check_call(command, cwd=str(agent_dir))
         print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL")
-        print("   Output: dist/CryptoDetect-Agent-v9.exe")
+        print("   Output: dist/CryptoDetect-Agent-v1.exe")
         print("=" * 60)
         return True
     except subprocess.CalledProcessError as e:

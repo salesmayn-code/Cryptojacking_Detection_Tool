@@ -484,7 +484,7 @@ def test_agent_version_matches_auto_updater_and_backend():
     import enhanced_agent
     from backend.routes import agent as agent_routes
 
-    assert enhanced_agent.AGENT_VERSION == "9.0"
+    assert enhanced_agent.AGENT_VERSION == "1.0"
     assert auto_updater.CURRENT_VERSION == enhanced_agent.AGENT_VERSION
     assert agent_routes.AGENT_LATEST_VERSION == enhanced_agent.AGENT_VERSION
     assert f"v{enhanced_agent.AGENT_VERSION}" in (enhanced_agent.__doc__ or "")
