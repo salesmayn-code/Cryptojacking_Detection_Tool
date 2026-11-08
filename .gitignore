@@ -81,7 +81,8 @@ test_report.html
 # local notes / documents
 *.md
 !README.md
-!docs/results/results.md
+!docs/*.md
+!docs/**/*.md
 *.markdown
 *.docx
 *.pdf
