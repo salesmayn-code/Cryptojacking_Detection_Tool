@@ -1,4 +1,4 @@
-"""Windows tray application and endpoint security console for CryptoDetect v9.0."""
+"""Windows tray application and endpoint security console for CryptoDetect v1.0."""
 
 import ctypes
 import json

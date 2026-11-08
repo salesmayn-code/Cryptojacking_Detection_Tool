@@ -72,7 +72,7 @@ const Login = () => {
                         </div>
                         <div className="auth-spec-row">
                             <span className="auth-spec-key">Endpoint Agent</span>
-                            <span className="auth-spec-val">Windows tray v9.0 · 30s batching &amp; offline queue</span>
+                            <span className="auth-spec-val">Windows tray v1.0 · 30s batching &amp; offline queue</span>
                         </div>
                         <div className="auth-spec-row">
                             <span className="auth-spec-key">Alert Gate</span>

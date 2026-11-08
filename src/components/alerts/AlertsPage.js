@@ -947,7 +947,7 @@ const AlertsPage = () => {
                                                                             <div>
                                                                                 <h4 className="containment-title">Active SOC Containment &amp; Eradication Queue</h4>
                                                                                 <p className="containment-subtitle">
-                                                                                    Signed operator directives dispatched to <code>{alert.system_id}</code> with PID create-time verification.
+                                                                                    Authenticated operator directives dispatched to <code>{alert.system_id}</code> with PID create-time verification.
                                                                                 </p>
                                                                             </div>
                                                                             <div className="containment-header-controls">

@@ -167,7 +167,7 @@ const Register = () => {
                             </span>
                             <div>
                                 <h3>Deploy Windows Monitoring Agent</h3>
-                                <p>Install the v9.0 system-tray executable on the target workstation.</p>
+                                <p>Install the v1.0 system-tray executable on the target workstation.</p>
                             </div>
                         </div>
 
@@ -187,7 +187,7 @@ const Register = () => {
                                             <polyline points="7 10 12 15 17 10" />
                                             <line x1="12" y1="15" x2="12" y2="3" />
                                         </svg>
-                                        <span>Download CryptoDetect-Agent-v9.exe</span>
+                                        <span>Download CryptoDetect-Agent-v1.exe</span>
                                     </button>
                                 </div>
                             </div>
@@ -196,7 +196,7 @@ const Register = () => {
                                 <div className="step-number">2</div>
                                 <div className="step-content">
                                     <div className="step-title">Launch Agent Console</div>
-                                    <div className="step-desc">Run <code>CryptoDetect-Agent-v9.exe</code> to open the desktop tray agent</div>
+                                    <div className="step-desc">Run <code>CryptoDetect-Agent-v1.exe</code> to open the desktop tray agent</div>
                                 </div>
                             </div>
 

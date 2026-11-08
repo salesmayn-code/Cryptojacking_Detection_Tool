@@ -1,4 +1,4 @@
-"""ORM model for signed human-in-the-loop agent containment & audit commands."""
+"""ORM model for authenticated human-in-the-loop agent containment & audit commands."""
 
 from datetime import datetime
 from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text

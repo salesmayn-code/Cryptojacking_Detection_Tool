@@ -236,7 +236,7 @@ const MainLayout = ({ children }) => {
                     <div className="layout-topbar-right">
                         <span className="layout-agent-pill" title="Packaged Windows tray daemon release">
                             <span className="layout-agent-dot" aria-hidden="true" />
-                            Agent v9.0
+                            Agent v1.0
                         </span>
                         <ThemeToggle />
                     </div>

@@ -347,6 +347,9 @@ async def agent_report_command_result(
     if cmd.system_id != user.get("system_id"):
         raise HTTPException(status_code=403, detail="Not authorized for this command")
 
+    if cmd.status != "dispatched":
+        raise HTTPException(status_code=409, detail="Command is not awaiting a result")
+
     norm_status = str(payload.status or "").strip().lower()
     if norm_status not in {"completed", "failed"}:
         raise HTTPException(status_code=400, detail="Command outcome status must be completed or failed")

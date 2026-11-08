@@ -377,7 +377,7 @@ const ProfilePage = () => {
                                 <polyline points="7 10 12 15 17 10" />
                                 <line x1="12" y1="15" x2="12" y2="3" />
                             </svg>
-                            <span>Download CryptoDetect-Agent-v9.exe</span>
+                            <span>Download CryptoDetect-Agent-v1.exe</span>
                         </button>
                     </div>
                 </section>

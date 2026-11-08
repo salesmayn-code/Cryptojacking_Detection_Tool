@@ -153,7 +153,7 @@ alone.
 ### Dashboard
 
 The React front end provides login and registration, user and administrator
-dashboards, live system monitoring, alert management with a signed
+dashboards, live system monitoring, alert management with an authenticated
 human-in-the-loop Active SOC Containment Queue (`Suspend`, `Kill`, `Quarantine`,
 `Block IP`, and `Scan Persistence`), reports, profile and notification
 settings, and an audit-log view for administrators.
