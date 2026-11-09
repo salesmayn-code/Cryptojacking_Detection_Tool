@@ -6,7 +6,16 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from backend.database import Base, DATABASE_URL
-from backend.models import alert, metric, report, system, user  # noqa: F401
+from backend.models import (  # noqa: F401
+    agent_command,
+    alert,
+    audit_log,
+    metric,
+    notification_channel,
+    report,
+    system,
+    user,
+)
 
 config = context.config
 

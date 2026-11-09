@@ -266,6 +266,7 @@ API integration tests, performance checks, and an end-to-end system flow.
 |---|---|
 | `SECRET_KEY` | JWT signing key; replace the development default |
 | `DATABASE_URL` | SQLAlchemy connection string; defaults to local SQLite |
+| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins (defaults to `*` in dev) |
 | `API_URL` | Backend URL used by the agent |
 | `AGENT_UPDATE_INTERVAL` | Agent sampling interval in seconds |
 | `RANDOM_FOREST_MODEL_PATH`, `XGBOOST_MODEL_PATH` | Custom model artifacts |
@@ -278,8 +279,7 @@ API integration tests, performance checks, and an end-to-end system flow.
 
 ## Notes
 
-- CORS currently allows all origins in `backend/main.py`; restrict this before
-  exposing the API publicly.
+- Set `CORS_ORIGINS` to your production frontend origin before exposing the API publicly.
 - The development default for `SECRET_KEY` must be replaced in any deployed
   environment.
 - Raw training datasets and compiled Windows `.exe` bundles are excluded from version control.

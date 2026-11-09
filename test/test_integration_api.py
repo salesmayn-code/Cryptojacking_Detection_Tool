@@ -100,7 +100,7 @@ def ingest_batch(body: MetricsBatchRequest, x_api_key: str = Header(...)):
 
     # Persist metrics
     for m in body.metrics:
-        _metrics.append({**m.dict(), "system_id": body.system_id})
+        _metrics.append({**m.model_dump(), "system_id": body.system_id})
 
     # Mock ML inference: flag if cpu_total >= 90
     alerts_generated = []
@@ -177,7 +177,7 @@ def make_batch(cpu: float = 20.0, n: int = 1):
             timestamp=datetime.utcnow().isoformat(),
             cpu_total=cpu, mem_percent=52.0,
             network_lo_rx=1024, network_lo_tx=512,
-        ).dict()
+        ).model_dump()
         for _ in range(n)
     ]
     return {"system_id": VALID_SYSTEM_ID, "metrics": metrics}

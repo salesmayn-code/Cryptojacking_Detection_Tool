@@ -14,8 +14,8 @@ router = APIRouter()
 AGENT_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / '..' / 'monitoring_agent'
 AGENT_LATEST_VERSION = "1.0"
 AGENT_LATEST_EXE = AGENT_DIR / 'dist' / 'CryptoDetect-Agent-v1.exe'
-AGENT_LEGACY_VERSION = "7.0"
-AGENT_LEGACY_EXE = AGENT_DIR / 'dist' / 'CryptoDetect-Agent-v7.exe'
+AGENT_LEGACY_VERSION = "1.0"
+AGENT_LEGACY_EXE = AGENT_LATEST_EXE
 
 
 def _agent_payload(path: Path, version: str) -> dict:

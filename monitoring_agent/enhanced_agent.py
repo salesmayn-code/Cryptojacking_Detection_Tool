@@ -1082,7 +1082,7 @@ class MonitoringAgent:
         protected_names = {
             "system", "system idle process", "registry", "smss.exe", "csrss.exe",
             "wininit.exe", "services.exe", "lsass.exe", "winlogon.exe",
-            "dwm.exe", "explorer.exe", "cryptodetect-agent-v1.exe", "cryptodetect-agent-v9.exe",
+            "dwm.exe", "explorer.exe", "cryptodetect-agent-v1.exe", "cryptodetect-agent.exe",
         }
         if "cryptodetect" in name_norm:
             return True

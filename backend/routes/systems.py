@@ -198,7 +198,7 @@ async def update_system(
 
     from backend.services.audit_service import log_action
     log_action(db, actor=email, action="system.update", target_type="system",
-               target_id=system_id, details={"fields": update.dict(exclude_unset=True)})
+               target_id=system_id, details={"fields": update.model_dump(exclude_unset=True)})
     db.commit()
     db.refresh(system)
 

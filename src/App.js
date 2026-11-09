@@ -55,7 +55,7 @@ const DashboardRouter = () => {
 function App() {
   return (
     <AuthProvider>
-      <Router>
+      <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           {/* Public Routes - redirect to dashboard if logged in */}
           <Route path="/login" element={

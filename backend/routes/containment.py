@@ -43,7 +43,7 @@ PROTECTED_PROCESS_NAMES = {
     "dwm.exe",
     "explorer.exe",
     "cryptodetect-agent-v1.exe",
-    "cryptodetect-agent-v9.exe",
+    "cryptodetect-agent.exe",
 }
 
 

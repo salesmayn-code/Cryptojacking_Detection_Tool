@@ -2,6 +2,7 @@
 FastAPI Backend - Main Application
 """
 import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -16,25 +17,9 @@ _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-app = FastAPI(
-    title="Cryptojacking Detection API",
-    description="Backend API for real-time cryptojacking detection system",
-    version="1.0.0"
-)
-
 _offline_task = None
 
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-
-@app.on_event("startup")
 async def on_startup():
     """Initialize database tables on first run"""
     from backend.database import init_db
@@ -58,7 +43,6 @@ async def on_startup():
     _offline_task = asyncio.create_task(_offline_sweeper())
 
 
-@app.on_event("shutdown")
 async def on_shutdown():
     """Stop background tasks on shutdown."""
     global _offline_task
@@ -68,6 +52,35 @@ async def on_shutdown():
             await _offline_task
         except Exception:
             pass
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await on_startup()
+    try:
+        yield
+    finally:
+        await on_shutdown()
+
+
+app = FastAPI(
+    title="Cryptojacking Detection API",
+    description="Backend API for real-time cryptojacking detection system",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS Configuration (restrict via CORS_ORIGINS in production)
+_raw_cors = os.getenv("CORS_ORIGINS", "*").strip()
+_cors_origins = ["*"] if _raw_cors in ("", "*") else [o.strip() for o in _raw_cors.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")

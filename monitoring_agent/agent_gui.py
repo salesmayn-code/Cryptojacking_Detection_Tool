@@ -45,8 +45,8 @@ LOG_DIR = Path.home() / ".cryptodetect"
 LOG_FILE = LOG_DIR / "agent_gui.log"
 LOCK_FILE = LOG_DIR / "agent_gui.lock"
 
-SINGLE_INSTANCE_MUTEX_NAME = "Local\\CryptoDetect_Agent_SingleInstance_Mutex_v9"
-WAKEUP_EVENT_NAME = "Local\\CryptoDetect_Agent_Wakeup_Event_v9"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\CryptoDetect_Agent_SingleInstance_Mutex_v1"
+WAKEUP_EVENT_NAME = "Local\\CryptoDetect_Agent_Wakeup_Event_v1"
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0
 
