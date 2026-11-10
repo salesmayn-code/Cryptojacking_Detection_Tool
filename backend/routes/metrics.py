@@ -137,6 +137,48 @@ def _normalize_loaded_object(obj: Any):
     return None, None, None
 
 
+
+class PortableXGBoostClassifier:
+    """Lightweight zero-dependency gradient-boosted tree evaluator for serverless deployment."""
+
+    def __init__(self, data: dict):
+        self.trees = data["trees"]
+        self.base_score = float(data["base_score"])
+        self.base_margin = float(np.log(self.base_score / (1.0 - self.base_score)))
+        self.mean = np.array(data["scaler_mean"], dtype=np.float64)
+        self.scale = np.array(data["scaler_scale"], dtype=np.float64)
+        self.feature_names = list(data["feature_names"])
+        self.classes_ = np.array(data.get("classes", [0, 1]))
+        self.feature_importances_ = np.array(
+            data.get("feature_importances", [1.0 / len(self.feature_names)] * len(self.feature_names)),
+            dtype=np.float64,
+        )
+        self.n_features_in_ = len(self.feature_names)
+
+    def _eval_tree(self, node: dict, x: np.ndarray) -> float:
+        if "leaf" in node:
+            return float(node["leaf"])
+        f_idx = int(str(node.get("split", "0")).replace("f", ""))
+        val = x[f_idx] if f_idx < len(x) else 0.0
+        c_id = node["yes"] if val < float(node["split_condition"]) else node["no"]
+        for child in node.get("children", []):
+            if child["nodeid"] == c_id:
+                return self._eval_tree(child, x)
+        return 0.0
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        X = np.atleast_2d(X)
+        probs = []
+        for row in X:
+            scaled = (row - self.mean) / self.scale
+            margin = self.base_margin + sum(self._eval_tree(t, scaled) for t in self.trees)
+            p = 1.0 / (1.0 + np.exp(-margin))
+            probs.append([1.0 - p, p])
+        return np.array(probs)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
 def _init_model():
     global MODEL_LOADED, MODEL_NAME, ml_model, scaler, feature_names
 
@@ -184,6 +226,24 @@ def _init_model():
             return
         except Exception as err:
             print(f"Model load error ({model_path}): {err}")
+
+    portable_path = _saved_models_dir / "xgboost_portable.json"
+    if portable_path.exists():
+        try:
+            with open(portable_path, "r", encoding="utf-8") as f:
+                p_data = json.load(f)
+            ml_model = PortableXGBoostClassifier(p_data)
+            scaler = None
+            feature_names = ml_model.feature_names
+            MODEL_NAME = "xgboost_portable"
+            MODEL_LOADED = True
+            print(f"Portable ML model loaded: {portable_path}")
+            print(f"Feature count: {len(feature_names)}")
+            return
+        except Exception as p_err:
+            print(f"Portable model load error: {p_err}")
+
+
 
     MODEL_LOADED = False
     MODEL_NAME = "heuristic"

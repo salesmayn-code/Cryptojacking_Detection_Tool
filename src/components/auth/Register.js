@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { API_BASE_URL } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 import './Auth.css';
 
@@ -87,8 +88,8 @@ const Register = () => {
     };
 
     const handleDownloadAgent = () => {
-        const base = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-        window.open(`${base}/api/agent/download`, '_blank', 'noopener,noreferrer');
+
+        window.open(`${API_BASE_URL}/api/agent/download`, '_blank', 'noopener,noreferrer');
     };
 
     if (registered && credentials) {

@@ -1,11 +1,16 @@
 """Reports routes with persisted metadata and real CSV/PDF downloads."""
 
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import List
 import os
 
-import pandas as pd
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -23,7 +28,11 @@ from backend.routes.auth import verify_token
 
 router = APIRouter()
 
-REPORTS_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "generated_reports"
+_base_reports_parent = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if os.getenv("VERCEL") or not os.access(str(_base_reports_parent), os.W_OK):
+    REPORTS_DIR = Path(os.getenv("TMPDIR", "/tmp")) / "generated_reports"
+else:
+    REPORTS_DIR = _base_reports_parent / "generated_reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_METRICS = {"cpu", "memory", "network", "gpu"}
@@ -129,10 +138,21 @@ def _collect_metric_rows(system_ids: List[str], start_dt: datetime, end_dt: date
 
 
 def _write_csv(rows: List[dict], file_path: Path):
-    df = pd.DataFrame(rows)
-    if df.empty:
-        df = pd.DataFrame([{"message": "No metrics available for selected filters"}])
-    df.to_csv(file_path, index=False)
+    effective_rows = rows if rows else [{"message": "No metrics available for selected filters"}]
+    if pd is not None:
+        df = pd.DataFrame(effective_rows)
+        df.to_csv(file_path, index=False)
+        return
+
+    fieldnames: List[str] = []
+    for r in effective_rows:
+        for k in r.keys():
+            if k not in fieldnames:
+                fieldnames.append(k)
+    with open(file_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(effective_rows)
 
 
 def _write_pdf(rows: List[dict], report_request: ReportGenerate, file_path: Path):

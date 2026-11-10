@@ -223,7 +223,17 @@ async def delete_alert(
 
 
 def _policy_path() -> Path:
-    return Path(os.getenv("PROCESS_POLICY_PATH", str(Path(__file__).resolve().parents[2] / "backend" / "process_policy.json")))
+    repo_default = Path(__file__).resolve().parents[2] / "backend" / "process_policy.json"
+    configured = Path(os.getenv("PROCESS_POLICY_PATH", str(repo_default)))
+    if not os.getenv("PROCESS_POLICY_PATH") and (os.getenv("VERCEL") or not os.access(str(configured.parent), os.W_OK)):
+        tmp_policy = Path(os.getenv("TMPDIR", "/tmp")) / "process_policy.json"
+        if not tmp_policy.exists() and repo_default.exists():
+            try:
+                tmp_policy.write_text(repo_default.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception:
+                pass
+        return tmp_policy
+    return configured
 
 
 def _load_policy() -> dict:

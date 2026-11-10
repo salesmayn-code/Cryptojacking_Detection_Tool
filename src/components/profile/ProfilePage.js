@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { authAPI, systemsAPI } from '../../services/api';
+import { authAPI, systemsAPI, API_BASE_URL } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import NotificationSettings from './NotificationSettings';
 import './Profile.css';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 
 const ProfilePage = () => {
-    const { user, setUserData } = useAuth();
+    const { user, setUserData, refreshProfile } = useAuth();
+    const [claimingAdmin, setClaimingAdmin] = useState(false);
 
     const [initialLoading, setInitialLoading] = useState(true);
     const [savingProfile, setSavingProfile] = useState(false);
@@ -191,6 +192,26 @@ const ProfilePage = () => {
         }
     };
 
+    const handleClaimAdmin = async () => {
+        setClaimingAdmin(true);
+        setMessage('');
+        setError('');
+        try {
+            const response = await authAPI.claimInitialAdmin();
+            const updatedUser = response.data?.user || { ...(user || {}), role: 'admin' };
+            setUserData(updatedUser);
+            if (refreshProfile) {
+                await refreshProfile();
+            }
+            setMessage(response.data?.message || 'Organization administrator role granted successfully!');
+            await loadAll();
+        } catch (err) {
+            setError(err.response?.data?.detail || 'Failed to claim organization administrator role.');
+        } finally {
+            setClaimingAdmin(false);
+        }
+    };
+
     if (initialLoading) {
         return (
             <div className="profile-page" aria-busy="true" aria-label="Loading settings and agent">
@@ -205,6 +226,8 @@ const ProfilePage = () => {
             </div>
         );
     }
+
+    const userRole = profile?.role || user?.role || 'user';
 
     return (
         <div className="profile-page fade-in">
@@ -239,6 +262,35 @@ const ProfilePage = () => {
             )}
 
             <div className="profile-grid">
+                {userRole !== 'admin' && (
+                    <div className="profile-admin-claim-card">
+                        <div className="profile-admin-claim-content">
+                            <div className="profile-admin-claim-icon" aria-hidden="true">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                                    <line x1="12" y1="8" x2="12" y2="12" />
+                                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h4>Claim Organization Admin</h4>
+                                <p>
+                                    First operator setup: Activate initial administrator privileges for this deployment to manage audit trails, alert actions, and system-wide security configurations.
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            className={`btn btn-primary ${claimingAdmin ? 'is-busy' : ''}`}
+                            onClick={handleClaimAdmin}
+                            disabled={claimingAdmin}
+                        >
+                            {claimingAdmin && <span className="spinner-small" aria-hidden="true" />}
+                            <span>{claimingAdmin ? 'Claiming Admin...' : 'Activate Initial Admin Role'}</span>
+                        </button>
+                    </div>
+                )}
+
                 {/* Card 1: Endpoint Identity & Credentials */}
                 <section className="profile-card profile-hero">
                     <div className="profile-identity">
@@ -271,6 +323,9 @@ const ProfilePage = () => {
                                     {systemStatus}
                                 </span>
                                 <span className="badge badge-neutral tabular-nums">{lastSeenLabel}</span>
+                                <span className={`badge badge-${userRole === 'admin' ? 'info' : 'neutral'}`}>
+                                    Role: {userRole === 'admin' ? 'Admin' : 'Operator'}
+                                </span>
                             </div>
                         </div>
                     </div>

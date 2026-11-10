@@ -1,7 +1,12 @@
 // API Configuration and Service Layer
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+export const API_BASE_URL =
+    process.env.REACT_APP_API_URL !== undefined
+        ? process.env.REACT_APP_API_URL
+        : process.env.NODE_ENV === 'production'
+        ? ''
+        : 'http://localhost:8000';
 
 // Create axios instance with default config
 const api = axios.create({
@@ -47,6 +52,7 @@ export const authAPI = {
     login: (data) => api.post('/api/auth/login', data),
     getProfile: () => api.get('/api/auth/profile'),
     updateProfile: (data) => api.put('/api/auth/profile', data),
+    claimInitialAdmin: () => api.post('/api/auth/claim-initial-admin'),
     regenerateApiKey: () => api.post('/api/auth/profile/api-key'),
     changePassword: (data) => api.put('/api/auth/profile/password', data),
     uploadProfilePicture: (file) => {

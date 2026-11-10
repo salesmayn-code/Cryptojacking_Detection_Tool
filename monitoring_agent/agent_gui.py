@@ -303,6 +303,54 @@ class AgentTrayApp:
     def _is_running(self):
         return self.agent_thread is not None and self.agent_thread.is_alive()
 
+    def _is_user_admin(self) -> bool:
+        """Check if running with elevated Windows Administrator privileges."""
+        if os.name != "nt" or ctypes is None:
+            return False
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+
+    def _quit_app(self):
+        """Cleanly exit the current agent GUI process."""
+        self.exit_app()
+
+    def _relaunch_as_admin(self):
+        """Relaunch the agent with elevated Windows Administrator privileges via UAC."""
+        if os.name != "nt" or ctypes is None:
+            self._show_message(APP_NAME, "Administrator elevation is only supported on Windows.")
+            return
+
+        is_frozen = getattr(sys, "frozen", False)
+        if is_frozen:
+            executable = sys.executable
+            params = ""
+        else:
+            executable = sys.executable
+            params = f'"{os.path.abspath(__file__)}"'
+
+        try:
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                executable,
+                params,
+                None,
+                1,
+            )
+            # ShellExecuteW returns > 32 on success. <= 32 indicates error/cancellation (e.g. 5 = access denied).
+            if ret > 32:
+                logging.info("Elevated instance launched (code=%s). Releasing lock and exiting unprivileged GUI.", ret)
+                self.instance_guard.release()
+                self._quit_app()
+            else:
+                logging.warning("User cancelled or failed UAC elevation (ShellExecuteW code=%s).", ret)
+                self._set_action("Elevation cancelled or declined by user")
+        except Exception as exc:
+            logging.exception("Failed to relaunch as administrator: %s", exc)
+            self._show_message(APP_NAME, f"Failed to elevate as administrator: {exc}")
+
     def _validate_setup(self, system_id: str, api_key: str, api_url: str) -> tuple[bool, str]:
         if not system_id.strip() or not api_key.strip():
             return False, "System ID and API key are required"
@@ -572,8 +620,11 @@ class AgentTrayApp:
             bg=PALETTE["bg_card"],
         ).pack(anchor="w", pady=(2, 0))
 
+        header_right = tk.Frame(header, bg=PALETTE["bg_card"])
+        header_right.pack(side="right")
+
         self.status_pill_label = tk.Label(
-            header,
+            header_right,
             textvariable=self.status_var,
             font=("Consolas", 9, "bold"),
             padx=12,
@@ -583,7 +634,31 @@ class AgentTrayApp:
             highlightthickness=1,
             highlightbackground=PALETTE["border_subtle"],
         )
-        self.status_pill_label.pack(side="right", padx=(16, 0))
+        self.status_pill_label.pack(side="right")
+
+        if self._is_user_admin():
+            admin_badge = tk.Label(
+                header_right,
+                text="ADMIN ELEVATED",
+                font=("Segoe UI", 8, "bold"),
+                padx=10,
+                pady=5,
+                bg="#172554",
+                fg=PALETTE["accent_cyan"],
+                highlightthickness=1,
+                highlightbackground="#1e40af",
+            )
+            admin_badge.pack(side="right", padx=(0, 10))
+        else:
+            elevate_btn = self._make_flat_button(
+                header_right,
+                "Elevate as Admin",
+                self._relaunch_as_admin,
+                variant="secondary",
+                padx=10,
+                pady=4,
+            )
+            elevate_btn.pack(side="right", padx=(0, 10))
 
         # ── 2. Live Host Telemetry Strip (3 Uniform Columns) ────────────
         telemetry_row = tk.Frame(outer, bg=PALETTE["bg_window"])
@@ -1119,9 +1194,15 @@ if ([string]::IsNullOrWhiteSpace($url)) {{ $url = '{DEFAULT_BACKEND}' }}
         threading.Thread(target=_do_check, daemon=True).start()
 
     def _build_tray_menu(self):
-        return pystray.Menu(
+        menu_items = [
             Item(self._menu_status_text, None, enabled=False),
             Item("Open Console", lambda icon, item: self._run_on_ui(self._show_window), default=True),
+        ]
+        if not self._is_user_admin():
+            menu_items.append(
+                Item("Restart as Administrator", lambda icon, item: self._run_on_ui(self._relaunch_as_admin))
+            )
+        menu_items.extend([
             Item("Start Monitoring", lambda icon, item: self._run_on_ui(self.start_monitoring)),
             Item("Stop Monitoring", lambda icon, item: self._run_on_ui(self.stop_monitoring)),
             Item("Open Web Dashboard", lambda icon, item: self._run_on_ui(self.open_dashboard)),
@@ -1129,7 +1210,8 @@ if ([string]::IsNullOrWhiteSpace($url)) {{ $url = '{DEFAULT_BACKEND}' }}
             Item("Check for Updates", lambda icon, item: self._run_on_ui(self.check_for_updates)),
             Item("View Logs", lambda icon, item: self._run_on_ui(self.view_logs)),
             Item("Exit", lambda icon, item: self._run_on_ui(self.exit_app)),
-        )
+        ])
+        return pystray.Menu(*menu_items)
 
     def _start_tray(self):
         if pystray is None:

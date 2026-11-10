@@ -1,0 +1,37 @@
+# Dependencies & caches
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+
+# Local Windows agent & build artifacts
+monitoring_agent/
+*.exe
+*.spec
+
+# Local databases & runtime uploads
+backend/*.db
+backend/*.db-journal
+backend/generated_reports/
+backend/uploads/
+
+# Machine learning datasets, raw pickles & evaluation runs
+ml_models/datasets/
+ml_models/evaluation/
+ml_models/saved_models/*.pkl
+
+# Offline documentation, tests, scripts & IDE agents
+.agents/
+.claude/
+data/
+docs/
+notebooks/
+test/
+scripts/

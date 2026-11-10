@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
+  "functions": {
+    "api/**/*.py": {
+      "excludeFiles": "{node_modules/**,build/**,src/**,public/**,monitoring_agent/**,ml_models/evaluation/**,ml_models/datasets/**,ml_models/saved_models/*.pkl}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/((?!api/|health|static/|favicon\\.ico|manifest\\.json|robots\\.txt|logo.*\\.png).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

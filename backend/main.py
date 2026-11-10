@@ -40,7 +40,8 @@ async def on_startup():
             await asyncio.sleep(int(os.getenv("SYSTEM_STATUS_SWEEP_SECONDS", "10")))
 
     global _offline_task
-    _offline_task = asyncio.create_task(_offline_sweeper())
+    if not os.getenv("VERCEL"):
+        _offline_task = asyncio.create_task(_offline_sweeper())
 
 
 async def on_shutdown():
@@ -92,6 +93,7 @@ async def root():
     }
 
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
     return {
         "status": "healthy",

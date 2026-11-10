@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { API_BASE_URL } from '../../services/api';
 import ThemeToggle from '../ThemeToggle';
 import './MainLayout.css';
 
@@ -123,6 +124,12 @@ const MainLayout = ({ children }) => {
         .toUpperCase()
         .slice(0, 2);
 
+    const avatarUrl = user?.profile_picture_url
+        ? (user.profile_picture_url.startsWith('http://') || user.profile_picture_url.startsWith('https://')
+            ? user.profile_picture_url
+            : `${API_BASE_URL}${user.profile_picture_url}`)
+        : null;
+
     return (
         <div className="layout">
             {mobileOpen && (
@@ -191,7 +198,17 @@ const MainLayout = ({ children }) => {
                         onKeyDown={(e) => e.key === 'Enter' && navigate('/profile')}
                         title="Open profile & agent settings"
                     >
-                        <div className="sidebar-user-avatar">{initials}</div>
+                        <div className="sidebar-user-avatar">
+                            {avatarUrl ? (
+                                <img
+                                    src={avatarUrl}
+                                    alt=""
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }}
+                                />
+                            ) : (
+                                initials
+                            )}
+                        </div>
                         <div className="sidebar-user-info">
                             <span className="sidebar-user-name">{user?.full_name || 'Operator'}</span>
                             <code className="sidebar-user-id">{user?.system_id || 'No Endpoint'}</code>

@@ -7,6 +7,7 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+import hashlib
 import os
 import platform
 from pathlib import Path
@@ -15,7 +16,14 @@ router = APIRouter()
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
+_raw_secret = os.getenv("SECRET_KEY", "").strip()
+if not _raw_secret or _raw_secret == "your-secret-key-here":
+    # Deterministic per-deployment fallback derived from environment context when SECRET_KEY is unset
+    _seed = os.getenv("VERCEL_GIT_COMMIT_SHA") or os.getenv("VERCEL_URL") or "cryptodetect-local-dev-secret"
+    SECRET_KEY = hashlib.sha256(f"cryptodetect-jwt::{_seed}".encode("utf-8")).hexdigest()
+else:
+    SECRET_KEY = _raw_secret
+
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
 
@@ -24,7 +32,11 @@ from backend.database import get_db
 from backend.models.user import User
 from backend.models.system import MonitoredSystem
 
-PROFILE_PICTURES_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "uploads" / "profile_pictures"
+_base_upload_parent = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if os.getenv("VERCEL") or not os.access(str(_base_upload_parent), os.W_OK):
+    PROFILE_PICTURES_DIR = Path(os.getenv("TMPDIR", "/tmp")) / "uploads" / "profile_pictures"
+else:
+    PROFILE_PICTURES_DIR = _base_upload_parent / "uploads" / "profile_pictures"
 PROFILE_PICTURES_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PROFILE_PICTURE_SIZE_BYTES = 2 * 1024 * 1024
 
@@ -108,13 +120,16 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     # Create user
     system_id = User.generate_system_id()
     api_key = User.generate_api_key()
+    configured_admin_email = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+    initial_role = "admin" if (configured_admin_email and user_data.email.strip().lower() == configured_admin_email) else "user"
 
     new_user = User(
         email=user_data.email,
         full_name=user_data.full_name,
         hashed_password=pwd_context.hash(user_data.password),
         system_id=system_id,
-        api_key=User.hash_api_key(api_key)
+        api_key=User.hash_api_key(api_key),
+        role=initial_role,
     )
     db.add(new_user)
 
@@ -138,7 +153,7 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
 
     from backend.services.audit_service import log_action
     log_action(db, actor=user_data.email, action="user.register", target_type="user",
-               target_id=user_data.email, details={"system_id": system_id})
+               target_id=user_data.email, details={"system_id": system_id, "role": initial_role})
     db.commit()
 
     access_token = create_access_token(data={"sub": user_data.email})
@@ -154,6 +169,62 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
             "role": new_user.role,
             "profile_picture_url": new_user.profile_picture_url
         }
+    }
+
+
+@router.post("/claim-initial-admin")
+async def claim_initial_admin(email: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """Promote the caller to admin if no admin account exists yet in the organization."""
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.role == "admin":
+        return {
+            "status": "success",
+            "message": "Account already has administrator privileges",
+            "user": {
+                "email": user.email,
+                "full_name": user.full_name,
+                "system_id": user.system_id,
+                "api_key": User.mask_api_key(user.api_key),
+                "role": user.role,
+                "profile_picture_url": user.profile_picture_url,
+            },
+        }
+
+    configured_admin_email = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+    existing_admin = db.query(User).filter(User.role == "admin").first()
+    if existing_admin and (not configured_admin_email or user.email.strip().lower() != configured_admin_email):
+        raise HTTPException(
+            status_code=403,
+            detail="An administrator account already exists for this organization.",
+        )
+
+    user.role = "admin"
+    from backend.services.audit_service import log_action
+    log_action(
+        db,
+        actor=email,
+        action="user.claim_initial_admin",
+        target_type="user",
+        target_id=email,
+        details={"promoted_to": "admin"},
+    )
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "message": "Organization administrator role activated",
+        "user": {
+            "email": user.email,
+            "full_name": user.full_name,
+            "system_id": user.system_id,
+            "api_key": User.mask_api_key(user.api_key),
+            "role": user.role,
+            "profile_picture_url": user.profile_picture_url,
+        },
     }
 
 

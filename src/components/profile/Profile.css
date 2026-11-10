@@ -380,6 +380,58 @@
     padding: 0.6875rem 1rem;
 }
 
+/* Admin Claim Card */
+.profile-admin-claim-card {
+    grid-column: 1 / -1;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xl);
+    padding: 1.125rem 1.375rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.25rem;
+    transition: border-color 150ms ease;
+}
+
+.profile-admin-claim-card:hover {
+    border-color: var(--border-hover);
+}
+
+.profile-admin-claim-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.profile-admin-claim-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-lg);
+    background: var(--primary-glow);
+    color: var(--primary-color);
+    border: 1px solid var(--primary-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.profile-admin-claim-content h4 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.profile-admin-claim-content p {
+    margin: 0.25rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    max-width: 65ch;
+    line-height: 1.45;
+}
+
 /* Responsive */
 @media (max-width: 960px) {
     .profile-grid {
@@ -395,6 +447,16 @@
     }
 
     .profile-badges {
+        justify-content: center;
+    }
+
+    .profile-admin-claim-card {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .profile-admin-claim-card .btn {
+        width: 100%;
         justify-content: center;
     }
 }
